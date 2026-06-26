@@ -310,8 +310,8 @@ struct filename *nomount_handle_getname(struct filename *filename)
     while (name_len > 1 && name[name_len - 1] == '/') { name_len--; ((char *)name)[name_len] = '\0'; }
     if (unlikely(name_len <= 1)) return filename;
 
-    check_name = name;
-    for (i = name_len - 1; i >= 0; i--) { if (name[i] == '/') { check_name = name + i + 1; break; } }
+    check_name = strrchr(name, '/');
+    if (check_name) check_name++; else check_name = name;
     b_len = name_len - (check_name - name);
     b_hash = full_name_hash(NULL, check_name, b_len);
 
@@ -334,17 +334,17 @@ struct filename *nomount_handle_getname(struct filename *filename)
     rcu_read_lock();
     rule = nomount_get_rule_by_path(name, r_len);
     if (likely(rule)) {
-        if (unlikely(rule->flags & NM_FLAG_WHITEOUT)) {
-            char *mut_name = (char *)filename->name;
-            nm_debug("Whiteout hit: %s (forcing -ENOENT)\n", name);
-            mut_name[0] = '/'; mut_name[1] = '\xff'; mut_name[2] = '\0';
-        } else {
+        u16 real_len = rule->real_node.len;
+        bool is_whiteout = (rule->flags & NM_FLAG_WHITEOUT);
+        rcu_read_unlock();
+        if (likely(!is_whiteout)) {
             nm_debug("Redirected: %s -> %s\n", name, rule->real_path);
-            memcpy((char *)filename->name, rule->real_path, rule->real_node.len);
-            ((char *)filename->name)[rule->real_node.len] = '\0';
+            memcpy((char *)filename->name, rule->real_path, real_len);
+            ((char *)filename->name)[real_len] = '\0';
         }
+    } else {
+        rcu_read_unlock();
     }
-    rcu_read_unlock();
     if (page_buf && page_buf != fast_buf) __putname(page_buf);
     return filename;
 }
