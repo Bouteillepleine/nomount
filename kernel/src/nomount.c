@@ -215,6 +215,7 @@ int nomount_handle_permission(struct inode *inode, int mask)
 {
     bool is_injected = false, is_dir = false;
     struct nm_inode_node *node;
+    uid_t uid;
 
     if (__nomount_should_skip() || IS_ERR_OR_NULL(inode)) return 0;
 
@@ -236,7 +237,8 @@ int nomount_handle_permission(struct inode *inode, int mask)
         }
     }
 
-    if (!is_injected && current_uid().val >= AID_APP_START) {
+    uid = current_uid().val;
+    if (!is_injected && uid >= AID_APP_START && (uid % 100000) < 90000) {
         struct dentry *dentry, *parent;
         struct inode *parent_inode;
         bool is_private = false;
