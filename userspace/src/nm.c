@@ -26,23 +26,26 @@ void c_main(long *sp) {
     if (nm_family < 0) { exit_code = 3; goto do_exit; }
 
     char cmd = argv[1][0];
-    if (cmd == 'a' || cmd == 'd') {
-        int is_add = (cmd == 'a');
-        int step = 1 + is_add;
+
+    if (cmd == 'a' || cmd == 'd' || cmd == 'w') {
+        /* 'a' takes 2 args, 'w' and 'd' take 1 arg */
+        int step = 1 + (cmd == 'a');
         if (argc < 2 + step) { exit_code = 0; goto do_exit; }
 
         const char *cwd = (sys3(SYS_GETCWD, (long)cwd_buf, PATH_MAX, 0) > 0) ? cwd_buf : "/";
         char *cursor = payload;
-        int target_cmd = 3 - is_add; 
+
+        /* Command 2 is ADD_RULE, Command 3 is DEL_RULE */
+        int target_cmd = 2 + (cmd == 'd');
         exit_code = 0;
 
-        for (int i = 2; i + step <= argc; i += step) {
+        for (int i = 2; i + step - 1 < argc; i += step) {
             char *v_end = resolve_path(v_resolved, cwd, argv[i]);
             int v_len = v_end - v_resolved;
             if (!v_len) { exit_code = 3; continue; }
 
             int r_len = 0;
-            if (is_add) {
+            if (cmd == 'a') {
                 char *r_end = resolve_path(r_resolved, cwd, argv[i+1]);
                 r_len = r_end - r_resolved;
                 if (!r_len) { exit_code = 3; continue; }
@@ -53,15 +56,17 @@ void c_main(long *sp) {
                 cursor = payload;
             }
 
-            *(unsigned short*)(cursor + (is_add << 2)) = v_len;
-            if (is_add) {
-                *(unsigned int*)cursor = 0; 
-                *(unsigned short*)(cursor + 6) = r_len; 
+            if (target_cmd == 3) {
+                /* Set NM_FLAG_WHITEOUT (4) if 'w', else 0 */
+                *(unsigned int*)cursor = (cmd == 'w') ? 4 : 0; 
+                *(unsigned short*)(cursor + 4) = v_len;
+                *(unsigned short*)(cursor + 6) = r_len;
                 memcpy(cursor + 8, v_resolved, v_len);
-                memcpy(cursor + 8 + v_len, r_resolved, r_len);
+                if (r_len > 0) memcpy(cursor + 8 + v_len, r_resolved, r_len);
                 cursor += 8 + v_len + r_len;
             } else {
-                memcpy(cursor + 2, v_resolved, v_len); 
+                *(unsigned short*)cursor = v_len;
+                memcpy(cursor + 2, v_resolved, v_len);
                 cursor += 2 + v_len;
             }
         }
@@ -107,13 +112,25 @@ void c_main(long *sp) {
                 if (msg->nlmsg_type == 3 || msg->nlmsg_type == 2) goto list_done; 
                 char *v = get_attr(msg, 1); 
                 char *r = get_attr(msg, 2); 
+                unsigned int *flags = get_attr(msg, 3);
 
                 if (v && r) {
+                    int is_whiteout = (flags && (*flags & 4));
                     if (is_json) {
                         print_str((const char *)",\n  {\n    \"virtual\": \"" + offset); offset = 0;
-                        print_str(v); print_str("\",\n    \"real\": \""); print_str(r); print_str("\"\n  }");
+                        print_str(v);
+                        if (is_whiteout) {
+                            print_str("\",\n    \"whiteout\": true\n  }");
+                        } else {
+                            print_str("\",\n    \"real\": \""); print_str(r); print_str("\"\n  }");
+                        }
                     } else {
-                        print_str(v); print_str(" -> "); print_str(r); print_str("\n");
+                        print_str(v);
+                        if (is_whiteout) {
+                            print_str(" (whiteout)\n");
+                        } else {
+                            print_str(" -> "); print_str(r); print_str("\n");
+                        }
                     }
                 }
             }

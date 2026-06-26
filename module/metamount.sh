@@ -62,9 +62,23 @@ for mod_path in "$MODULES_DIR"/*; do
             (
                 cd "$mod_path" || exit
                 if $VERBOSE; then
-                    find -L "$partition" \( -type f -o -type l \) 2>/dev/null | while read -r relative_path; do
+                    find -L "$partition" \( -type f -o -type l -o -type c \) 2>/dev/null | while read -r relative_path; do
                         real_path="$mod_path/$relative_path"
                         virtual_path="/$relative_path"
+
+                        if [ "${relative_path##*/}" = ".replace" ]; then
+                            target_dir="/${relative_path%/.replace}"
+                            echo "  -> Whiteout: $target_dir" >> "$LOG_FILE"
+                            "$LOADER" w "$target_dir" 2>> "$LOG_FILE"
+                            continue
+                        fi
+
+                        if [ -c "$real_path" ]; then
+                            echo "  -> Whiteout: $virtual_path" >> "$LOG_FILE"
+                            "$LOADER" w "$virtual_path" 2>> "$LOG_FILE"
+                            continue
+                        fi
+
                         echo "  -> Inject: $virtual_path" >> "$LOG_FILE"
                         "$LOADER" add "$virtual_path" "$real_path" 2>> "$LOG_FILE"
 
@@ -85,7 +99,17 @@ for mod_path in "$MODULES_DIR"/*; do
                         esac
                     done
                 else
-                    find -L "$partition" \( -type f -o -type l \) -exec sh -c '
+                    find -L "$partition" \( -type c -o -name ".replace" \) -exec sh -c '
+                        for f do
+                            if [ "${f##*/}" = ".replace" ]; then
+                                printf "/%s\0" "${f%/.replace}"
+                            else
+                                printf "/%s\0" "$f"
+                            fi
+                        done
+                    ' _ {} + 2>/dev/null | xargs -0 -r "$LOADER" w >> "$LOG_FILE" 2>&1
+
+                    find -L "$partition" \( -type f -o -type l \) ! -name ".replace" -exec sh -c '
                         mod="$1"; shift
                         for f do
                             printf "/%s\0%s/%s\0" "$f" "$mod" "$f"
@@ -102,7 +126,7 @@ for mod_path in "$MODULES_DIR"/*; do
                                     ;;
                             esac
                         done
-                    ' _ "$mod_path" {} + 2>/dev/null | xargs -0 -r -n 500 "$LOADER" add >> "$LOG_FILE" 2>&1
+                    ' _ "$mod_path" {} + 2>/dev/null | xargs -0 -r "$LOADER" add >> "$LOG_FILE" 2>&1
                 fi
             )
         fi
