@@ -245,7 +245,7 @@ int nomount_handle_permission(struct inode *inode, int mask)
             parent = READ_ONCE(dentry->d_parent);
             if (parent && parent != dentry) {
                 parent_inode = d_backing_inode(parent);
-                if (parent_inode) {
+                if (parent_inode && parent_inode->i_sb) {
                     struct nm_inode_node *p_node;
                     hash_for_each_possible_rcu(nomount_inodes_ht, p_node, node, parent_inode->i_ino) {
                         if (p_node->ino == parent_inode->i_ino && p_node->dev == parent_inode->i_sb->s_dev) {
