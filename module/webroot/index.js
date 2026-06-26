@@ -443,11 +443,19 @@ async function loadModule(modId) {
 
     const script = `
         cd "${modPath}" || exit 0
-        find -L system vendor product system_ext odm oem \\( -type f -o -type l \\) -exec sh -c '
+        find -L system vendor product system_ext odm oem \\( -type c -o -name ".replace" \\) -exec sh -c '
+            for f do
+                if [ "\${f##*/}" = ".replace" ]; then
+                    printf "/%s\\0" "\${f%/.replace}"
+                else
+                    printf "/%s\\0" "$f"
+                fi
+            done
+        ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} w
+        find -L system vendor product system_ext odm oem \\( -type f -o -type l \\) ! -name ".replace" -exec sh -c '
             mod="$1"; shift
             for f do
                 printf "/%s\\0%s/%s\\0" "$f" "$mod" "$f"
-
                 case "$f" in
                     vendor/*|product/*|system_ext/*|odm/*|oem/*)
                         [ ! -e "$mod/system/$f" ] && [ ! -L "$mod/system/$f" ] && printf "/system/%s\\0%s/%s\\0" "$f" "$mod" "$f" ;;
@@ -455,26 +463,34 @@ async function loadModule(modId) {
                         [ ! -e "$mod/\${f#system/}" ] && [ ! -L "$mod/\${f#system/}" ] && printf "/%s\\0%s/%s\\0" "\${f#system/}" "$mod" "$f" ;;
                 esac
             done
-        ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r -n 500 ${NM_BIN} add
+        ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r ${NM_BIN} a
     `;
-    
     try { await exec(script); } catch (e) { throw e; }
 }
 
 async function unloadModule(modId) {
-    try {
-        const rules = JSON.parse((await exec(`${NM_BIN} list json`)).stdout || "[]");
-        const targets = rules
-            .filter(r => r?.real?.startsWith(`${MOD_DIR}/${modId}/`))
-            .map(r => r.virtual);
-        if (targets.length === 0) return;
-        const cmdChunks = [];
-        for (let i = 0; i < targets.length; i += 500) {
-            const chunk = targets.slice(i, i + 500).join('\n');
-            cmdChunks.push(`cat << 'EOF' | tr '\\n' '\\0' | xargs -0 -r -n 500 ${NM_BIN} del\n${chunk}\nEOF`);
-        }
-        await exec(cmdChunks.join('\n'));
-    } catch (e) { throw e; }
+    const modPath = `${MOD_DIR}/${modId}`;
+    
+    const script = `
+        cd "${modPath}" || exit 0
+        find -L system vendor product system_ext odm oem \\( -type f -o -type l -o -type c \\) -exec sh -c '
+            mod="$1"; shift
+            for f do
+                if [ "\${f##*/}" = ".replace" ]; then
+                    printf "/%s\\0" "\${f%/.replace}"
+                    continue
+                fi
+                printf "/%s\\0" "$f"
+                case "$f" in
+                    vendor/*|product/*|system_ext/*|odm/*|oem/*)
+                        [ ! -e "$mod/system/$f" ] && [ ! -L "$mod/system/$f" ] && printf "/system/%s\\0" "$f" ;;
+                    system/vendor/*|system/product/*|system/system_ext/*|system/odm/*|system/oem/*)
+                        [ ! -e "$mod/\${f#system/}" ] && [ ! -L "$mod/\${f#system/}" ] && printf "/%s\\0" "\${f#system/}" ;;
+                esac
+            done
+        ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r ${NM_BIN} d
+    `;
+    try { await exec(script); } catch (e) { throw e; }
 }
 
 // Apps & Exclusions

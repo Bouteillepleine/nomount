@@ -19,6 +19,7 @@
 #define NOMOUNT_HASH_BITS  12
 #define NOMOUNT_UID_HASH_BITS 4
 #define NM_FLAG_IS_DIR      (1 << 1)
+#define NM_FLAG_WHITEOUT    (1 << 2)
 #define NM_INO_TYPE_REAL    (1 << 0)
 #define NM_INO_TYPE_VIRTUAL (1 << 1)
 #define NM_INO_TYPE_DIR     (1 << 2)
@@ -28,7 +29,6 @@ static DEFINE_HASHTABLE(nomount_inodes_ht,    NOMOUNT_HASH_BITS);
 static DEFINE_HASHTABLE(nomount_basenames_ht, NOMOUNT_HASH_BITS);
 static DEFINE_HASHTABLE(nomount_uid_ht,       NOMOUNT_UID_HASH_BITS);
 static LIST_HEAD(nomount_rules_list);
-static LIST_HEAD(nomount_private_dirs_list);
 static DEFINE_MUTEX(nomount_write_mutex);
 
 struct nm_inode_node {
@@ -43,6 +43,7 @@ struct nomount_child_name {
     unsigned long fake_ino;
     u16 name_len;
     u8 d_type;
+    u8 flags;
     char name[256];
 };
 
@@ -55,9 +56,7 @@ struct nm_child_array {
 
 struct nomount_dir_node {
     struct nm_inode_node dir;
-    struct list_head private_list;
     struct nm_child_array __rcu *child_array; 
-    char *dir_path;
     bool is_private;
 };
 
