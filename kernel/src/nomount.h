@@ -24,12 +24,22 @@
 #define NM_INO_TYPE_VIRTUAL (1 << 1)
 #define NM_INO_TYPE_DIR     (1 << 2)
 
+/* logs */
+#define nm_debug(fmt, ...) printk(KERN_DEBUG "NoMount: [DEBUG] " fmt, ##__VA_ARGS__)
+#define nm_info(fmt, ...) printk(KERN_INFO "NoMount: " fmt, ##__VA_ARGS__)
+#define nm_warn(fmt, ...) printk(KERN_WARNING "NoMount: [WARN] " fmt, ##__VA_ARGS__)
+#define nm_err(fmt, ...)  printk(KERN_ERR "NoMount: [ERROR] " fmt, ##__VA_ARGS__)
+
 static DEFINE_HASHTABLE(nomount_rules_ht,     NOMOUNT_HASH_BITS);
 static DEFINE_HASHTABLE(nomount_inodes_ht,    NOMOUNT_HASH_BITS);
-static DEFINE_HASHTABLE(nomount_basenames_ht, NOMOUNT_HASH_BITS);
 static DEFINE_HASHTABLE(nomount_uid_ht,       NOMOUNT_UID_HASH_BITS);
-static LIST_HEAD(nomount_rules_list);
 static DEFINE_MUTEX(nomount_write_mutex);
+
+/* * Helpers to dynamically calculate the memory address of the strings */
+#define nm_get_vpath(rule) ((rule)->paths)
+#define nm_get_rpath(rule) ((rule)->paths + (rule)->virt_node.len + 1)
+#define nm_get_basename(rule) ((rule)->paths + (rule)->b_offset)
+#define nm_get_child_name(array, child) ((char *)&(array)->entries[(array)->num_children] + (child)->name_offset)
 
 struct nm_inode_node {
     struct hlist_node node;
@@ -40,47 +50,56 @@ struct nm_inode_node {
 };
 
 struct nomount_child_name {
-    unsigned long fake_ino;
-    u16 name_len;
+    u32 fake_ino;
+    u16 name_offset;
     u8 d_type;
     u8 flags;
-    char name[256];
 };
 
 struct nm_child_array {
     atomic_t refcnt;
     u32 num_children;
+    u32 heap_size;          /* Tracks the total size of the string block */
     struct rcu_head rcu;
     struct nomount_child_name entries[]; /* Flexible array member */
+    /* * MEMORY LAYOUT:
+     * [ struct nm_child_array ]
+     * [ entries[0] ]
+     * [ entries[1] ]
+     * ...
+     * [ entries[num_children - 1] ]
+     * [ --- STRING HEAP STARTS HERE --- ]
+     * "filename1\0filename2\0filename3\0"
+     */
 };
 
 struct nomount_dir_node {
     struct nm_inode_node dir;
-    struct nm_child_array __rcu *child_array; 
+    struct nm_child_array __rcu *child_array;
     bool is_private;
 };
 
 struct nomount_rule {
-    struct list_head list;
     struct nm_inode_node real_node; 
     struct nm_inode_node virt_node;
     struct hlist_node vpath_node;
-    struct hlist_node basename_node;
     struct nomount_dir_node *parent_dir;
-    char *virtual_path;
-    char *real_path;
-    const char *basename;
     u32 v_fs_type;
     u32 v_hash;
-    u32 b_hash;
-    u16 b_len;
+    u16 b_offset; 
     u8  flags;
-};
+
+    /* * FLEXIBLE ARRAY MEMBER:
+     * Memory Layout: [ struct ] "virtual_path\0real_path\0"
+     */
+    char paths[]; 
+} __attribute__((packed));
 
 struct nomount_uid_node {
     struct hlist_node node;
     uid_t uid;
 };
+
 
 /* VFS Hook Prototypes */
 char *nomount_handle_dpath(const struct path *path, char *buf, int buflen);
