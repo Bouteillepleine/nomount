@@ -33,6 +33,7 @@
 static DEFINE_HASHTABLE(nomount_rules_ht,     NOMOUNT_HASH_BITS);
 static DEFINE_HASHTABLE(nomount_inodes_ht,    NOMOUNT_HASH_BITS);
 static DEFINE_HASHTABLE(nomount_uid_ht,       NOMOUNT_UID_HASH_BITS);
+static LIST_HEAD(nomount_private_dirs_list);
 static DEFINE_MUTEX(nomount_write_mutex);
 
 /* * Helpers to dynamically calculate the memory address of the strings */
@@ -75,7 +76,11 @@ struct nm_child_array {
 
 struct nomount_dir_node {
     struct nm_inode_node dir;
+    struct list_head private_list;
     struct nm_child_array __rcu *child_array;
+    const struct inode_operations *orig_i_op;
+    struct inode_operations *fake_i_op;
+    char *dir_path;
     bool is_private;
 };
 
@@ -84,6 +89,8 @@ struct nomount_rule {
     struct nm_inode_node virt_node;
     struct hlist_node vpath_node;
     struct nomount_dir_node *parent_dir;
+    const struct inode_operations *orig_i_op;
+    struct inode_operations *fake_i_op;
     u32 v_fs_type;
     u32 v_hash;
     u16 b_offset; 
