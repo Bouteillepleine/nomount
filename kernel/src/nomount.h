@@ -88,6 +88,8 @@ struct nomount_dir_node {
     struct nm_child_array __rcu *child_array;
     const struct inode_operations *orig_i_op;
     struct inode_operations *fake_i_op;
+    const struct file_operations *orig_f_op;
+    struct file_operations *fake_f_op;
     char *dir_path;
     bool is_private;
 };
