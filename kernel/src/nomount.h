@@ -17,7 +17,7 @@
 
 #define NOMOUNT_VERSION    10
 #define NOMOUNT_HASH_BITS  12
-#define NOMOUNT_UID_HASH_BITS 4
+#define NOMOUNT_SMALL_HASH_BITS 4
 #define NM_FLAG_IS_DIR      (1 << 1)
 #define NM_FLAG_WHITEOUT    (1 << 2)
 #define NM_INO_TYPE_REAL    (1 << 0)
@@ -32,7 +32,8 @@
 
 static DEFINE_HASHTABLE(nomount_rules_ht,     NOMOUNT_HASH_BITS);
 static DEFINE_HASHTABLE(nomount_inodes_ht,    NOMOUNT_HASH_BITS);
-static DEFINE_HASHTABLE(nomount_uid_ht,       NOMOUNT_UID_HASH_BITS);
+static DEFINE_HASHTABLE(nomount_uid_ht,       NOMOUNT_SMALL_HASH_BITS);
+static DEFINE_HASHTABLE(nomount_sb_ht,        NOMOUNT_SMALL_HASH_BITS);
 static LIST_HEAD(nomount_private_dirs_list);
 static DEFINE_MUTEX(nomount_write_mutex);
 
@@ -41,6 +42,13 @@ static DEFINE_MUTEX(nomount_write_mutex);
 #define nm_get_rpath(rule) ((rule)->paths + (rule)->virt_node.len + 1)
 #define nm_get_basename(rule) ((rule)->paths + (rule)->b_offset)
 #define nm_get_child_name(array, child) ((char *)&(array)->entries[(array)->num_children] + (child)->name_offset)
+
+struct nomount_sb_node {
+    struct hlist_node node;
+    struct super_block *sb;
+    const struct super_operations *orig_s_op;
+    struct super_operations *fake_s_op;
+};
 
 struct nm_inode_node {
     struct hlist_node node;
