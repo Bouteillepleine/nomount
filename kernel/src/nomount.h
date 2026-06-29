@@ -43,12 +43,68 @@ static DEFINE_MUTEX(nomount_write_mutex);
 #define nm_get_basename(rule) ((rule)->paths + (rule)->b_offset)
 #define nm_get_child_name(array, child) ((char *)&(array)->entries[(array)->num_children] + (child)->name_offset)
 
-struct nomount_sb_node {
-    struct hlist_node node;
-    struct super_block *sb;
-    const struct super_operations *orig_s_op;
-    struct super_operations *fake_s_op;
+
+/* Bypass for kCFI on Android GKI (Clang 16/17+) and classic LTO CFI */
+#if defined(__clang__)
+    #if __clang_major__ >= 16
+        #define nocfi __attribute__((no_sanitize("cfi", "kcfi")))
+    #else
+        #define nocfi __attribute__((no_sanitize("cfi")))
+    #endif
+#else
+    #define nocfi
+#endif
+
+/* Magic signature to safely identify our trojan structures in memory */
+#define NOMOUNT_MAGIC_SIG 0xDEADBEEFCAFEBABEULL
+
+/* --- Hijack Data Structures --- */
+
+struct nm_iop {
+    struct inode_operations fake_iop; /* MUST be exactly at offset 0 */
+    const struct inode_operations *orig_iop;
+    u64 signature;
+    struct nomount_rule *rule;        /* Direct pointer to the injection rule */
+    struct nomount_dir_node *dir_node;/* Direct pointer for directory nodes */
+    bool is_whiteout;
+    struct rcu_head rcu;
 };
+
+struct nm_fop {
+    struct file_operations fake_fop;  /* MUST be exactly at offset 0 */
+    const struct file_operations *orig_fop;
+    u64 signature;
+    struct nomount_dir_node *dir_node;
+    struct nm_child_array *array;     /* Pre-resolved child array */
+    struct rcu_head rcu;
+};
+
+struct nm_sop {
+    struct super_operations fake_sop; /* MUST be exactly at offset 0 */
+    const struct super_operations *orig_sop;
+    u64 signature;
+    struct super_block *sb;
+    struct rcu_head rcu;
+    struct hlist_node node;
+};
+
+/* --- Hijack Extractors (O(1) Access) --- */
+
+static inline struct nm_iop *get_nm_iop(const struct inode_operations *iop) {
+    struct nm_iop *nm_iop = container_of(iop, struct nm_iop, fake_iop);
+    /* Strict verification to prevent panics if another module hooked over us */
+    return (nm_iop && nm_iop->signature == NOMOUNT_MAGIC_SIG) ? nm_iop : NULL;
+}
+
+static inline struct nm_fop *get_nm_fop(const struct file_operations *fop) {
+    struct nm_fop *nm_fop = container_of(fop, struct nm_fop, fake_fop);
+    return (nm_fop && nm_fop->signature == NOMOUNT_MAGIC_SIG) ? nm_fop : NULL;
+}
+
+static inline struct nm_sop *get_nm_sop(const struct super_operations *sop) {
+    struct nm_sop *nm_sop = container_of(sop, struct nm_sop, fake_sop);
+    return (nm_sop && nm_sop->signature == NOMOUNT_MAGIC_SIG) ? nm_sop : NULL;
+}
 
 struct nm_inode_node {
     struct hlist_node node;
@@ -86,10 +142,6 @@ struct nomount_dir_node {
     struct nm_inode_node dir;
     struct list_head private_list;
     struct nm_child_array __rcu *child_array;
-    const struct inode_operations *orig_i_op;
-    struct inode_operations *fake_i_op;
-    const struct file_operations *orig_f_op;
-    struct file_operations *fake_f_op;
     char *dir_path;
     bool is_private;
 };
@@ -99,8 +151,6 @@ struct nomount_rule {
     struct nm_inode_node virt_node;
     struct hlist_node vpath_node;
     struct nomount_dir_node *parent_dir;
-    const struct inode_operations *orig_i_op;
-    struct inode_operations *fake_i_op;
     u32 v_fs_type;
     u32 v_hash;
     u16 b_offset; 
