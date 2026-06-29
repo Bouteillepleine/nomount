@@ -159,46 +159,28 @@ static __always_inline struct nomount_rule *nomount_get_rule_by_path(const char 
     return NULL;
 }
 
-/*** i_op / s_op Hijacking Hooks ***/
+/*** i_op / s_op / f_op Hijacking Hooks ***/
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
-    #define GETATTR_ARGS struct mnt_idmap *idmap, const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags
-    #define GETATTR_CALL idmap, path, stat, request_mask, query_flags
-    #define PERM_ARGS struct mnt_idmap *idmap, struct inode *inode, int mask
-    #define PERM_CALL idmap, inode, mask
+    #define IDMAP_ARG struct mnt_idmap *idmap
+    #define IDMAP_CALL idmap
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
-    #define GETATTR_ARGS struct user_namespace *mnt_userns, const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags
-    #define GETATTR_CALL mnt_userns, path, stat, request_mask, query_flags
-    #define PERM_ARGS struct user_namespace *mnt_userns, struct inode *inode, int mask
-    #define PERM_CALL mnt_userns, inode, mask
+    #define IDMAP_ARG struct user_namespace *mnt_userns
+    #define IDMAP_CALL mnt_userns
 #else
-    #define GETATTR_ARGS const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags
-    #define GETATTR_CALL path, stat, request_mask, query_flags
-    #define PERM_ARGS struct inode *inode, int mask
-    #define PERM_CALL inode, mask
+    #define IDMAP_ARG /* Nothing */
+    #define IDMAP_CALL /* Nothing */
 #endif
 
-static int nomount_hijacked_permission(PERM_ARGS)
+nocfi static int nomount_hijacked_permission(IDMAP_ARG, struct inode *inode, int mask)
 {
-    struct nm_inode_node *node;
+    struct nm_iop *nm_iop = get_nm_iop(inode->i_op);
     struct nomount_rule *rule = NULL;
 
-    if (__nomount_should_skip() || IS_ERR_OR_NULL(inode))
+    if (__nomount_should_skip() || IS_ERR_OR_NULL(inode) || !nm_iop)
         goto fallback;
 
-    rcu_read_lock();
-    hash_for_each_possible_rcu(nomount_inodes_ht, node, node, inode->i_ino) {
-        if (node->ino == inode->i_ino && node->dev == inode->i_sb->s_dev) {
-            if (node->type & NM_INO_TYPE_VIRTUAL) {
-                rule = container_of(node, struct nomount_rule, virt_node);
-            } else if (node->type & NM_INO_TYPE_REAL) {
-                rule = container_of(node, struct nomount_rule, real_node);
-            }
-            break; 
-        }
-    }
-    rcu_read_unlock();
-
+    rule = nm_iop->rule;
     if (!rule) goto fallback;
     if (rule->flags & NM_FLAG_WHITEOUT) return -ENOENT;
     if (mask & (MAY_WRITE | MAY_APPEND)) goto fallback; 
@@ -206,113 +188,80 @@ static int nomount_hijacked_permission(PERM_ARGS)
     return 0; 
 
 fallback:
-    if (rule && rule->orig_i_op && rule->orig_i_op->permission) {
-        return rule->orig_i_op->permission(PERM_CALL);
+    if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->permission) {
+        return nm_iop->orig_iop->permission(IDMAP_CALL, inode, mask);
     }
-    return generic_permission(PERM_CALL); 
+    return generic_permission(IDMAP_CALL, inode, mask); 
 }
 
-static int nomount_hijacked_parent_permission(PERM_ARGS)
+nocfi static int nomount_hijacked_parent_permission(IDMAP_ARG, struct inode *inode, int mask)
 {
-    struct nm_inode_node *node;
-    struct nomount_dir_node *dir_node = NULL;
+    struct nm_iop *nm_iop;
     if (mask == MAY_EXEC) return 0;
-
-    rcu_read_lock();
-    hash_for_each_possible_rcu(nomount_inodes_ht, node, node, inode->i_ino) {
-        if (node->ino == inode->i_ino && node->dev == inode->i_sb->s_dev) {
-            if (node->type & NM_INO_TYPE_DIR) {
-                dir_node = container_of(node, struct nomount_dir_node, dir);
-            }
-            break;
-        }
+    nm_iop = get_nm_iop(inode->i_op);
+    if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->permission) {
+        return nm_iop->orig_iop->permission(IDMAP_CALL, inode, mask);
     }
-    rcu_read_unlock();
-
-    if (dir_node && dir_node->orig_i_op && dir_node->orig_i_op->permission) {
-        return dir_node->orig_i_op->permission(PERM_CALL);
-    }
-    return generic_permission(PERM_CALL);
+    return generic_permission(IDMAP_CALL, inode, mask);
 }
 
-static int nomount_hijacked_getattr(GETATTR_ARGS)
+nocfi static int nomount_hijacked_getattr(IDMAP_ARG, const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
 {
-    struct nm_inode_node *child_node = NULL, *tmp_node;
-    struct nomount_rule *rule = NULL;
     struct inode *inode = d_backing_inode(path->dentry);
-    int ret = 0;
+    struct nm_iop *nm_iop = get_nm_iop(inode->i_op);
+    struct nomount_rule *rule;
+    int ret = -EINVAL;
 
-    rcu_read_lock();
-    hash_for_each_possible_rcu(nomount_inodes_ht, tmp_node, node, inode->i_ino) {
-        if (tmp_node->ino == inode->i_ino && tmp_node->dev == inode->i_sb->s_dev) {
-            child_node = tmp_node;
-            break;
-        }
-    }
+    if (!nm_iop) goto fallback;
 
-    if (child_node) {
-        if (child_node->type & NM_INO_TYPE_VIRTUAL) {
-            rule = container_of(child_node, struct nomount_rule, virt_node);
-            if (rule->flags & NM_FLAG_WHITEOUT) {
-                rcu_read_unlock();
-                return -ENOENT; 
-            }
-        } else if (child_node->type & NM_INO_TYPE_REAL) {
-            rule = container_of(child_node, struct nomount_rule, real_node);
-        }
-    }
-    rcu_read_unlock();
+    rule = nm_iop->rule;
+    if (rule && (rule->flags & NM_FLAG_WHITEOUT))
+        return -ENOENT;
 
-    if (likely(rule && rule->orig_i_op && rule->orig_i_op->getattr)) {
-        ret = rule->orig_i_op->getattr(GETATTR_CALL);
-        if (ret == 0 && (child_node->type & NM_INO_TYPE_REAL) && !__nomount_should_skip()) {
+    if (likely(nm_iop->orig_iop && nm_iop->orig_iop->getattr)) {
+        ret = nm_iop->orig_iop->getattr(IDMAP_CALL, path, stat, request_mask, query_flags);
+        /* Spoofing logic using pre-resolved pointers */
+        if (ret == 0 && rule && !nm_iop->is_whiteout && !__nomount_should_skip()) {
             stat->ino = READ_ONCE(rule->virt_node.ino);
             if (rule->virt_node.dev != 0)
                 stat->dev = READ_ONCE(rule->virt_node.dev);
         }
-    } else {
-        ret = -EINVAL; 
     }
 
     return ret;
+
+fallback:
+    /* Failsafe in case our hijack is missing */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
+    generic_fillattr(IDMAP_CALL, request_mask, inode, stat);
+#else
+    generic_fillattr(IDMAP_CALL, inode, stat);
+#endif
+    return 0;
 }
 
-static int nomount_hijacked_statfs(struct dentry *dentry, struct kstatfs *buf)
+nocfi static int nomount_hijacked_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
-    struct nm_inode_node *node;
-    struct nomount_sb_node *sb_node = NULL;
-    struct nomount_rule *rule = NULL;
+    struct nm_sop *nm_sop;
+    struct nm_iop *nm_iop;
     struct inode *inode;
     int ret = -ENOSYS;
-    if (unlikely(IS_ERR_OR_NULL(dentry))) return -EINVAL;
 
+    if (unlikely(IS_ERR_OR_NULL(dentry))) return -EINVAL;
     inode = d_backing_inode(dentry);
-    rcu_read_lock();
-    hash_for_each_possible_rcu(nomount_sb_ht, sb_node, node, (unsigned long)dentry->d_sb) {
-        if (sb_node->sb == dentry->d_sb) break;
-    }
-    if (likely(sb_node && sb_node->orig_s_op && sb_node->orig_s_op->statfs)) {
+
+    nm_sop = get_nm_sop(dentry->d_sb->s_op);
+    if (likely(nm_sop && nm_sop->orig_sop && nm_sop->orig_sop->statfs)) {
+        ret = nm_sop->orig_sop->statfs(dentry, buf);
         if (!__nomount_should_skip() && likely(inode)) {
-            hash_for_each_possible_rcu(nomount_inodes_ht, node, node, inode->i_ino) {
-                if (node->ino == inode->i_ino && node->dev == inode->i_sb->s_dev) {
-                    if (node->type & NM_INO_TYPE_VIRTUAL) {
-                        rule = container_of(node, struct nomount_rule, virt_node);
-                    } else if (node->type & NM_INO_TYPE_REAL) {
-                        rule = container_of(node, struct nomount_rule, real_node);
-                    }
-                    break;
-                }
+            nm_iop = get_nm_iop(inode->i_op);
+            if (nm_iop && nm_iop->rule && nm_iop->rule->v_fs_type != 0 && ret == 0) {
+                buf->f_type = READ_ONCE(nm_iop->rule->v_fs_type);
             }
         }
-        ret = sb_node->orig_s_op->statfs(dentry, buf);
-        if (likely(ret == 0 && rule && rule->v_fs_type != 0)) {
-            buf->f_type = READ_ONCE(rule->v_fs_type);
-        }
     }
-    rcu_read_unlock();
     return ret;
 }
-
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
     #define NM_ACTOR_RET bool
@@ -350,39 +299,25 @@ static NM_ACTOR_RET nomount_actor_proxy(struct dir_context *ctx, const char *nam
     return proxy->orig_ctx->actor(proxy->orig_ctx, name, namelen, offset, ino, d_type);
 }
 
-static int nomount_hijacked_iterate_shared(struct file *file, struct dir_context *ctx)
+nocfi static int nomount_hijacked_iterate_shared(struct file *file, struct dir_context *ctx)
 {
-    struct inode *dir_inode = file_inode(file);
-    struct nm_inode_node *inode_node;
-    struct nomount_dir_node *dir_node = NULL;
+    struct nm_fop *nm_fop = get_nm_fop(file->f_op);
     struct nm_child_array *array = NULL;
     loff_t nomount_magic_pos = 0x7000000000000000ULL;
     unsigned long v_index;
     int res = 0;
     u32 i;
 
-    if (!static_branch_unlikely(&nomount_active_dirs) || __nomount_should_skip())
+    if (!static_branch_unlikely(&nomount_active_dirs) || __nomount_should_skip() || !nm_fop || !nm_fop->orig_fop)
         goto do_real_iterate;
 
 #ifdef CONFIG_COMPAT
     if (in_compat_syscall()) nomount_magic_pos = 0x7E000000;
 #endif
 
-    rcu_read_lock();
-    hash_for_each_possible_rcu(nomount_inodes_ht, inode_node, node, dir_inode->i_ino) {
-        if (likely(inode_node->ino == dir_inode->i_ino && inode_node->dev == dir_inode->i_sb->s_dev)) {
-            if (likely(inode_node->type & NM_INO_TYPE_DIR)) {
-                dir_node = container_of(inode_node, struct nomount_dir_node, dir);
-                array = rcu_dereference(dir_node->child_array);
-                if (likely(array && atomic_inc_not_zero(&array->refcnt))) break;
-                array = NULL;
-            }
-            break; 
-        }
-    }
-    rcu_read_unlock();
-
-    if (!array || !dir_node || !dir_node->orig_f_op) 
+    /* Get the array dynamically resolved by the installer */
+    array = rcu_dereference_raw(nm_fop->dir_node->child_array);
+    if (!array || !atomic_inc_not_zero(&array->refcnt))
         goto do_real_iterate;
 
     if (ctx->pos < nomount_magic_pos) {
@@ -393,11 +328,11 @@ static int nomount_hijacked_iterate_shared(struct file *file, struct dir_context
             .array = array
         };
 
-        if (dir_node->orig_f_op->iterate_shared)
-            res = dir_node->orig_f_op->iterate_shared(file, &proxy_ctx.ctx);
+        if (nm_fop->orig_fop->iterate_shared)
+            res = nm_fop->orig_fop->iterate_shared(file, &proxy_ctx.ctx);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
-        else if (dir_node->orig_f_op->iterate)
-            res = dir_node->orig_f_op->iterate(file, &proxy_ctx.ctx);
+        else if (nm_fop->orig_fop->iterate)
+            res = nm_fop->orig_fop->iterate(file, &proxy_ctx.ctx);
 #endif
         else
             res = -ENOTDIR;
@@ -432,84 +367,73 @@ static int nomount_hijacked_iterate_shared(struct file *file, struct dir_context
     return res;
 
 do_real_iterate:
-    if (dir_node && dir_node->orig_f_op) {
-        if (dir_node->orig_f_op->iterate_shared)
-            return dir_node->orig_f_op->iterate_shared(file, ctx);
+    if (nm_fop && nm_fop->orig_fop) {
+        if (nm_fop->orig_fop->iterate_shared)
+            return nm_fop->orig_fop->iterate_shared(file, ctx);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
-        else if (dir_node->orig_f_op->iterate)
-            return dir_node->orig_f_op->iterate(file, ctx);
+        else if (nm_fop->orig_fop->iterate)
+            return nm_fop->orig_fop->iterate(file, ctx);
 #endif
     }
     return -ENOTDIR;
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
-static int nomount_hijacked_iterate(struct file *file, struct dir_context *ctx)
+nocfi static int nomount_hijacked_iterate(struct file *file, struct dir_context *ctx)
 {
     return nomount_hijacked_iterate_shared(file, ctx);
 }
 #endif
 
-/*** i_op / s_op Hijacking Helpers ***/
+
+/* --- Installers --- */
 
 static inline void nomount_hijack_superblock(struct super_block *sb)
 {
-    struct nomount_sb_node *sb_node;
-    struct super_operations *fake_sop;
+    struct nm_sop *nm_sop;
     if (unlikely(!sb || !sb->s_op)) return;
+    if (get_nm_sop(sb->s_op)) return; /* Already hijacked */
 
-    rcu_read_lock();
-    hash_for_each_possible_rcu(nomount_sb_ht, sb_node, node, (unsigned long)sb) {
-        if (sb_node->sb == sb) {
-            rcu_read_unlock();
-            return;
-        }
-    }
-    rcu_read_unlock();
+    nm_sop = kzalloc(sizeof(*nm_sop), GFP_KERNEL);
+    if (unlikely(!nm_sop)) return;
 
-    sb_node = kmalloc(sizeof(*sb_node), GFP_KERNEL);
-    if (unlikely(!sb_node)) return;
+    memcpy(&nm_sop->fake_sop, sb->s_op, sizeof(struct super_operations));
+    nm_sop->orig_sop = sb->s_op;
+    nm_sop->signature = NOMOUNT_MAGIC_SIG;
+    nm_sop->sb = sb;
 
-    fake_sop = kmalloc(sizeof(*fake_sop), GFP_KERNEL);
-    if (unlikely(!fake_sop)) { kfree(sb_node); return; }
-
-    memcpy(fake_sop, sb->s_op, sizeof(*fake_sop));
-    sb_node->sb = sb;
-    sb_node->orig_s_op = sb->s_op;
-    sb_node->fake_s_op = fake_sop;
-
-    if (fake_sop->statfs) {
-        fake_sop->statfs = nomount_hijacked_statfs;
+    if (nm_sop->fake_sop.statfs) {
+        nm_sop->fake_sop.statfs = nomount_hijacked_statfs;
         mutex_lock(&nomount_write_mutex);
-        hash_add_rcu(nomount_sb_ht, &sb_node->node, (unsigned long)sb);
-        smp_wmb();
-        sb->s_op = fake_sop;
+        hash_add_rcu(nomount_sb_ht, &nm_sop->node, (unsigned long)sb);
         mutex_unlock(&nomount_write_mutex);
+        smp_wmb();
+        sb->s_op = &nm_sop->fake_sop;
         nm_debug("Superblock successfully hijacked for dev: 0x%x\n", sb->s_dev);
     } else {
-        kfree(fake_sop);
-        kfree(sb_node);
+        kfree(nm_sop);
     }
 }
 
 static inline void nomount_hijack_rule_inode(struct nomount_rule *rule, struct inode *inode, bool is_whiteout)
 {
-    struct inode_operations *fake_iop;
-
-    if (unlikely(!inode || (!S_ISREG(inode->i_mode) && !is_whiteout))) 
+    struct nm_iop *nm_iop;
+    if (unlikely(!inode || (!S_ISREG(inode->i_mode) && !is_whiteout) || get_nm_iop(inode->i_op))) 
         return;
 
-    fake_iop = kmalloc(sizeof(*fake_iop), GFP_KERNEL);
-    if (likely(fake_iop)) {
-        memcpy(fake_iop, inode->i_op, sizeof(*fake_iop));
-        rule->orig_i_op = inode->i_op;
-        rule->fake_i_op = fake_iop;
-        if (fake_iop->getattr) fake_iop->getattr = nomount_hijacked_getattr;
+    nm_iop = kzalloc(sizeof(*nm_iop), GFP_KERNEL);
+    if (likely(nm_iop)) {
+        memcpy(&nm_iop->fake_iop, inode->i_op, sizeof(struct inode_operations));
+        nm_iop->orig_iop = inode->i_op;
+        nm_iop->signature = NOMOUNT_MAGIC_SIG;
+        nm_iop->rule = rule;
+        nm_iop->is_whiteout = is_whiteout;
 
-        if (fake_iop->permission || is_whiteout) 
-            fake_iop->permission = nomount_hijacked_permission;
+        if (nm_iop->fake_iop.getattr) nm_iop->fake_iop.getattr = nomount_hijacked_getattr;
+        if (nm_iop->fake_iop.permission || is_whiteout) 
+            nm_iop->fake_iop.permission = nomount_hijacked_permission;
 
-        inode->i_op = fake_iop;
+        inode->i_op = &nm_iop->fake_iop;
         inode->i_opflags &= ~IOP_FASTPERM; 
         nm_debug("i_op successfully hijacked for %s inode %lu\n", 
                  is_whiteout ? "whiteout (virtual)" : "physical", inode->i_ino);
@@ -518,123 +442,119 @@ static inline void nomount_hijack_rule_inode(struct nomount_rule *rule, struct i
 
 static inline void nomount_hijack_virtual_parent(struct nomount_dir_node *dir_node, struct inode *inode)
 {
-    struct file_operations *fake_fop;
+    struct nm_fop *nm_fop;
 
-    if (dir_node->fake_f_op || unlikely(!inode->i_fop)) return;
+    if (unlikely(!inode->i_fop || get_nm_fop(inode->i_fop))) return;
 
-    fake_fop = kmalloc(sizeof(*fake_fop), GFP_KERNEL);
-    if (likely(fake_fop)) {
-        memcpy(fake_fop, inode->i_fop, sizeof(*fake_fop));
-        dir_node->orig_f_op = inode->i_fop;
-        dir_node->fake_f_op = fake_fop;
+    nm_fop = kzalloc(sizeof(*nm_fop), GFP_KERNEL);
+    if (likely(nm_fop)) {
+        memcpy(&nm_fop->fake_fop, inode->i_fop, sizeof(struct file_operations));
+        nm_fop->orig_fop = inode->i_fop;
+        nm_fop->signature = NOMOUNT_MAGIC_SIG;
+        nm_fop->dir_node = dir_node;
 
-        if (fake_fop->iterate_shared) {
-            fake_fop->iterate_shared = nomount_hijacked_iterate_shared;
+        if (nm_fop->fake_fop.iterate_shared) {
+            nm_fop->fake_fop.iterate_shared = nomount_hijacked_iterate_shared;
         } 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
-        else if (fake_fop->iterate) {
-            fake_fop->iterate = nomount_hijacked_iterate;
+        else if (nm_fop->fake_fop.iterate) {
+            nm_fop->fake_fop.iterate = nomount_hijacked_iterate;
         }
 #endif
 
-        inode->i_fop = fake_fop;
+        inode->i_fop = &nm_fop->fake_fop;
         nm_debug("i_fop successfully hijacked for virtual parent dir (ino: %lu)\n", inode->i_ino);
     }
 }
 
 static inline void nomount_hijack_dir_inode(struct nomount_dir_node *dir_node, struct inode *inode)
 {
-    struct inode_operations *fake_iop;
-    if (dir_node->fake_i_op) return;
+    struct nm_iop *nm_iop;
 
-    fake_iop = kmalloc(sizeof(*fake_iop), GFP_KERNEL);
-    if (likely(fake_iop)) {
-        memcpy(fake_iop, inode->i_op, sizeof(*fake_iop));
-        dir_node->orig_i_op = inode->i_op;
-        dir_node->fake_i_op = fake_iop;
-        fake_iop->permission = nomount_hijacked_parent_permission;
-        inode->i_op = fake_iop;
+    if (get_nm_iop(inode->i_op)) return;
+
+    nm_iop = kzalloc(sizeof(*nm_iop), GFP_KERNEL);
+    if (likely(nm_iop)) {
+        memcpy(&nm_iop->fake_iop, inode->i_op, sizeof(struct inode_operations));
+        nm_iop->orig_iop = inode->i_op;
+        nm_iop->signature = NOMOUNT_MAGIC_SIG;
+        nm_iop->dir_node = dir_node;
+
+        nm_iop->fake_iop.permission = nomount_hijacked_parent_permission;
+        inode->i_op = &nm_iop->fake_iop;
         inode->i_opflags &= ~IOP_FASTPERM;
         nm_debug("i_op successfully hijacked for private dir (ino: %lu)\n", inode->i_ino);
     }
 }
 
+/* --- Cleaners --- */
+
 static void nomount_restore_physical_inode(struct nomount_rule *rule)
 {
     struct path target_path;
+    struct nm_iop *nm_iop;
     const char *path_to_restore = (rule->flags & NM_FLAG_WHITEOUT) ? nm_get_vpath(rule) : nm_get_rpath(rule);
-    if (unlikely(!rule->fake_i_op || !rule->orig_i_op)) return;
-
+    
     if (kern_path(path_to_restore, LOOKUP_FOLLOW, &target_path) == 0) {
         struct inode *t_inode = d_backing_inode(target_path.dentry);
+
         spin_lock(&t_inode->i_lock);
-        if (t_inode->i_op == rule->fake_i_op) {
-            t_inode->i_op = rule->orig_i_op;
+        nm_iop = get_nm_iop(t_inode->i_op);
+        if (nm_iop && nm_iop->rule == rule) {
+            t_inode->i_op = nm_iop->orig_iop;
             nm_debug("Successfully cured inode %lu for %s\n", t_inode->i_ino, path_to_restore);
+            kfree_rcu(nm_iop, rcu);
         }
         spin_unlock(&t_inode->i_lock);
         path_put(&target_path);
     }
-    
-    synchronize_rcu();
-    kfree(rule->fake_i_op);
-    rule->fake_i_op = NULL;
-    rule->orig_i_op = NULL;
 }
 
 static void nomount_restore_dir_node(struct nomount_dir_node *dir_node)
 {
     struct path target_path;
+    struct nm_iop *nm_iop;
+    struct nm_fop *nm_fop;
+
     if (unlikely(!dir_node->dir_path)) return;
-    if (unlikely(!dir_node->fake_i_op && !dir_node->fake_f_op)) return;
 
     if (kern_path(dir_node->dir_path, LOOKUP_FOLLOW, &target_path) == 0) {
         struct inode *t_inode = d_backing_inode(target_path.dentry);
 
         spin_lock(&t_inode->i_lock);
-        if (dir_node->fake_i_op && t_inode->i_op == dir_node->fake_i_op) {
-            t_inode->i_op = dir_node->orig_i_op;
+        nm_iop = get_nm_iop(t_inode->i_op);
+        if (nm_iop && nm_iop->dir_node == dir_node) {
+            t_inode->i_op = nm_iop->orig_iop;
             t_inode->i_opflags |= IOP_FASTPERM;
             nm_debug("Successfully cured i_op for dir %lu\n", t_inode->i_ino);
+            kfree_rcu(nm_iop, rcu);
         }
-        if (dir_node->fake_f_op && t_inode->i_fop == dir_node->fake_f_op) {
-            t_inode->i_fop = dir_node->orig_f_op;
+
+        nm_fop = get_nm_fop(t_inode->i_fop);
+        if (nm_fop && nm_fop->dir_node == dir_node) {
+            t_inode->i_fop = nm_fop->orig_fop;
             nm_debug("Successfully cured i_fop for dir %lu\n", t_inode->i_ino);
+            kfree_rcu(nm_fop, rcu);
         }
+
         spin_unlock(&t_inode->i_lock);
         path_put(&target_path);
-    }
-
-    synchronize_rcu();
-
-    if (dir_node->fake_i_op) {
-        kfree(dir_node->fake_i_op);
-        dir_node->fake_i_op = NULL;
-        dir_node->orig_i_op = NULL;
-    }
-
-    if (dir_node->fake_f_op) {
-        kfree(dir_node->fake_f_op);
-        dir_node->fake_f_op = NULL;
-        dir_node->orig_f_op = NULL;
     }
 }
 
 static void nomount_restore_superblocks(void)
 {
-    struct nomount_sb_node *sb_node;
+    struct nm_sop *nm_sop;
     struct hlist_node *tmp;
     int bkt;
 
-    hash_for_each_safe(nomount_sb_ht, bkt, tmp, sb_node, node) {
-        if (sb_node->sb && sb_node->sb->s_op == sb_node->fake_s_op) {
-            sb_node->sb->s_op = sb_node->orig_s_op;
-            nm_debug("Successfully cured superblock for dev: 0x%x\n", sb_node->sb->s_dev);
+    hash_for_each_safe(nomount_sb_ht, bkt, tmp, nm_sop, node) {
+        if (nm_sop->sb) {
+            nm_sop->sb->s_op = nm_sop->orig_sop;
+            nm_debug("Successfully cured superblock for dev: 0x%x\n", nm_sop->sb->s_dev);
         }
-        hash_del_rcu(&sb_node->node);
-        synchronize_rcu();
-        kfree(sb_node->fake_s_op);
-        kfree(sb_node);
+        hash_del_rcu(&nm_sop->node);
+        kfree_rcu(nm_sop, rcu);
     }
 }
 
