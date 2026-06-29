@@ -161,17 +161,6 @@ static __always_inline struct nomount_rule *nomount_get_rule_by_path(const char 
 
 /*** i_op / s_op / f_op Hijacking Hooks ***/
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
-    #define IDMAP_ARG struct mnt_idmap *idmap
-    #define IDMAP_CALL idmap
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
-    #define IDMAP_ARG struct user_namespace *mnt_userns
-    #define IDMAP_CALL mnt_userns
-#else
-    #define IDMAP_ARG /* Nothing */
-    #define IDMAP_CALL /* Nothing */
-#endif
-
 nocfi static int nomount_hijacked_permission(IDMAP_ARG, struct inode *inode, int mask)
 {
     struct nm_iop *nm_iop = get_nm_iop(inode->i_op);
@@ -283,12 +272,15 @@ static NM_ACTOR_RET nomount_actor_proxy(struct dir_context *ctx, const char *nam
     struct nomount_proxy_ctx *proxy = container_of(ctx, struct nomount_proxy_ctx, ctx);
     struct nm_child_array *array = proxy->array;
     u32 i;
+    NM_ACTOR_RET ret;
 
     if (array) {
         for (i = 0; i < array->num_children; i++) {
             struct nomount_child_name *child = &array->entries[i];
+            char *child_name_str;
             if (likely(!(child->flags & NM_FLAG_WHITEOUT))) continue;
-            char *child_name_str = nm_get_child_name(array, child);
+
+            child_name_str = nm_get_child_name(array, child);
             if (child_name_str[namelen] == '\0' && 
                 memcmp(child_name_str, name, namelen) == 0) {
                 return NM_ACTOR_CONTINUE;
@@ -296,7 +288,11 @@ static NM_ACTOR_RET nomount_actor_proxy(struct dir_context *ctx, const char *nam
         }
     }
 
-    return proxy->orig_ctx->actor(proxy->orig_ctx, name, namelen, offset, ino, d_type);
+    proxy->orig_ctx->pos = proxy->ctx.pos;
+    ret = proxy->orig_ctx->actor(proxy->orig_ctx, name, namelen, offset, ino, d_type);
+    proxy->ctx.pos = proxy->orig_ctx->pos;
+    
+    return ret;
 }
 
 nocfi static int nomount_hijacked_iterate_shared(struct file *file, struct dir_context *ctx)
@@ -315,10 +311,14 @@ nocfi static int nomount_hijacked_iterate_shared(struct file *file, struct dir_c
     if (in_compat_syscall()) nomount_magic_pos = 0x7E000000;
 #endif
 
-    /* Get the array dynamically resolved by the installer */
-    array = rcu_dereference_raw(nm_fop->dir_node->child_array);
-    if (!array || !atomic_inc_not_zero(&array->refcnt))
+    rcu_read_lock();
+    array = rcu_dereference(nm_fop->dir_node->child_array);
+    if (array && atomic_inc_not_zero(&array->refcnt)) {
+        rcu_read_unlock();
+    } else {
+        rcu_read_unlock();
         goto do_real_iterate;
+    }
 
     if (ctx->pos < nomount_magic_pos) {
         struct nomount_proxy_ctx proxy_ctx = {
@@ -391,8 +391,7 @@ nocfi static int nomount_hijacked_iterate(struct file *file, struct dir_context 
 static inline void nomount_hijack_superblock(struct super_block *sb)
 {
     struct nm_sop *nm_sop;
-    if (unlikely(!sb || !sb->s_op)) return;
-    if (get_nm_sop(sb->s_op)) return; /* Already hijacked */
+    if (unlikely(!sb || !sb->s_op || get_nm_sop(sb->s_op))) return;
 
     nm_sop = kzalloc(sizeof(*nm_sop), GFP_KERNEL);
     if (unlikely(!nm_sop)) return;
@@ -407,8 +406,7 @@ static inline void nomount_hijack_superblock(struct super_block *sb)
         mutex_lock(&nomount_write_mutex);
         hash_add_rcu(nomount_sb_ht, &nm_sop->node, (unsigned long)sb);
         mutex_unlock(&nomount_write_mutex);
-        smp_wmb();
-        sb->s_op = &nm_sop->fake_sop;
+        smp_store_release(&sb->s_op, &nm_sop->fake_sop);
         nm_debug("Superblock successfully hijacked for dev: 0x%x\n", sb->s_dev);
     } else {
         kfree(nm_sop);
@@ -418,6 +416,7 @@ static inline void nomount_hijack_superblock(struct super_block *sb)
 static inline void nomount_hijack_rule_inode(struct nomount_rule *rule, struct inode *inode, bool is_whiteout)
 {
     struct nm_iop *nm_iop;
+
     if (unlikely(!inode || (!S_ISREG(inode->i_mode) && !is_whiteout) || get_nm_iop(inode->i_op))) 
         return;
 
@@ -429,11 +428,11 @@ static inline void nomount_hijack_rule_inode(struct nomount_rule *rule, struct i
         nm_iop->rule = rule;
         nm_iop->is_whiteout = is_whiteout;
 
-        if (nm_iop->fake_iop.getattr) nm_iop->fake_iop.getattr = nomount_hijacked_getattr;
+        nm_iop->fake_iop.getattr = nomount_hijacked_getattr;
         if (nm_iop->fake_iop.permission || is_whiteout) 
             nm_iop->fake_iop.permission = nomount_hijacked_permission;
 
-        inode->i_op = &nm_iop->fake_iop;
+        smp_store_release(&inode->i_op, &nm_iop->fake_iop);
         inode->i_opflags &= ~IOP_FASTPERM; 
         nm_debug("i_op successfully hijacked for %s inode %lu\n", 
                  is_whiteout ? "whiteout (virtual)" : "physical", inode->i_ino);
@@ -453,16 +452,14 @@ static inline void nomount_hijack_virtual_parent(struct nomount_dir_node *dir_no
         nm_fop->signature = NOMOUNT_MAGIC_SIG;
         nm_fop->dir_node = dir_node;
 
-        if (nm_fop->fake_fop.iterate_shared) {
+        if (nm_fop->fake_fop.iterate_shared)
             nm_fop->fake_fop.iterate_shared = nomount_hijacked_iterate_shared;
-        } 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
-        else if (nm_fop->fake_fop.iterate) {
+        else if (nm_fop->fake_fop.iterate)
             nm_fop->fake_fop.iterate = nomount_hijacked_iterate;
-        }
 #endif
 
-        inode->i_fop = &nm_fop->fake_fop;
+        smp_store_release(&inode->i_fop, &nm_fop->fake_fop);
         nm_debug("i_fop successfully hijacked for virtual parent dir (ino: %lu)\n", inode->i_ino);
     }
 }
@@ -470,7 +467,6 @@ static inline void nomount_hijack_virtual_parent(struct nomount_dir_node *dir_no
 static inline void nomount_hijack_dir_inode(struct nomount_dir_node *dir_node, struct inode *inode)
 {
     struct nm_iop *nm_iop;
-
     if (get_nm_iop(inode->i_op)) return;
 
     nm_iop = kzalloc(sizeof(*nm_iop), GFP_KERNEL);
@@ -479,9 +475,8 @@ static inline void nomount_hijack_dir_inode(struct nomount_dir_node *dir_node, s
         nm_iop->orig_iop = inode->i_op;
         nm_iop->signature = NOMOUNT_MAGIC_SIG;
         nm_iop->dir_node = dir_node;
-
         nm_iop->fake_iop.permission = nomount_hijacked_parent_permission;
-        inode->i_op = &nm_iop->fake_iop;
+        smp_store_release(&inode->i_op, &nm_iop->fake_iop);
         inode->i_opflags &= ~IOP_FASTPERM;
         nm_debug("i_op successfully hijacked for private dir (ino: %lu)\n", inode->i_ino);
     }
@@ -494,14 +489,13 @@ static void nomount_restore_physical_inode(struct nomount_rule *rule)
     struct path target_path;
     struct nm_iop *nm_iop;
     const char *path_to_restore = (rule->flags & NM_FLAG_WHITEOUT) ? nm_get_vpath(rule) : nm_get_rpath(rule);
-    
+
     if (kern_path(path_to_restore, LOOKUP_FOLLOW, &target_path) == 0) {
         struct inode *t_inode = d_backing_inode(target_path.dentry);
-
         spin_lock(&t_inode->i_lock);
         nm_iop = get_nm_iop(t_inode->i_op);
         if (nm_iop && nm_iop->rule == rule) {
-            t_inode->i_op = nm_iop->orig_iop;
+            smp_store_release(&t_inode->i_op, nm_iop->orig_iop);
             nm_debug("Successfully cured inode %lu for %s\n", t_inode->i_ino, path_to_restore);
             kfree_rcu(nm_iop, rcu);
         }
@@ -524,7 +518,7 @@ static void nomount_restore_dir_node(struct nomount_dir_node *dir_node)
         spin_lock(&t_inode->i_lock);
         nm_iop = get_nm_iop(t_inode->i_op);
         if (nm_iop && nm_iop->dir_node == dir_node) {
-            t_inode->i_op = nm_iop->orig_iop;
+            smp_store_release(&t_inode->i_op, nm_iop->orig_iop);
             t_inode->i_opflags |= IOP_FASTPERM;
             nm_debug("Successfully cured i_op for dir %lu\n", t_inode->i_ino);
             kfree_rcu(nm_iop, rcu);
@@ -532,7 +526,7 @@ static void nomount_restore_dir_node(struct nomount_dir_node *dir_node)
 
         nm_fop = get_nm_fop(t_inode->i_fop);
         if (nm_fop && nm_fop->dir_node == dir_node) {
-            t_inode->i_fop = nm_fop->orig_fop;
+            smp_store_release(&t_inode->i_fop, nm_fop->orig_fop);
             nm_debug("Successfully cured i_fop for dir %lu\n", t_inode->i_ino);
             kfree_rcu(nm_fop, rcu);
         }
@@ -550,7 +544,7 @@ static void nomount_restore_superblocks(void)
 
     hash_for_each_safe(nomount_sb_ht, bkt, tmp, nm_sop, node) {
         if (nm_sop->sb) {
-            nm_sop->sb->s_op = nm_sop->orig_sop;
+            smp_store_release(&nm_sop->sb->s_op, nm_sop->orig_sop);
             nm_debug("Successfully cured superblock for dev: 0x%x\n", nm_sop->sb->s_dev);
         }
         hash_del_rcu(&nm_sop->node);
