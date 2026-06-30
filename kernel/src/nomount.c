@@ -186,7 +186,8 @@ fallback:
 static int nomount_hijacked_parent_permission(IDMAP_ARG, struct inode *inode, int mask)
 {
     struct nm_iop *nm_iop;
-    if (mask == MAY_EXEC) return 0;
+    if ((mask & MAY_EXEC) && !(mask & (MAY_WRITE | MAY_APPEND))) return 0;
+
     nm_iop = get_nm_iop(inode->i_op);
     if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->permission) {
         return nm_iop->orig_iop->permission(IDMAP_CALL, inode, mask);
