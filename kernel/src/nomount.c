@@ -186,8 +186,7 @@ fallback:
 static int nomount_hijacked_parent_permission(IDMAP_ARG, struct inode *inode, int mask)
 {
     struct nm_iop *nm_iop;
-    if ((mask & MAY_EXEC) && !(mask & (MAY_WRITE | MAY_APPEND))) return 0;
-
+    if (mask == MAY_EXEC) return 0;
     nm_iop = get_nm_iop(inode->i_op);
     if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->permission) {
         return nm_iop->orig_iop->permission(IDMAP_CALL, inode, mask);
@@ -386,8 +385,60 @@ static int nomount_hijacked_iterate(struct file *file, struct dir_context *ctx)
 }
 #endif
 
+static char *nomount_hijacked_dname(struct dentry *dentry, char *buf, int buflen)
+{
+    struct nm_dop *nm_dop = get_nm_dop(dentry->d_op);
+    struct nomount_rule *rule;
+    size_t len;
+
+    if (unlikely(!nm_dop || __nomount_should_skip())) goto fallback;
+
+    rule = nm_dop->rule;
+    if (unlikely(!rule)) goto fallback;
+    len = rule->virt_node.len;
+    if (unlikely(buflen <= len)) return ERR_PTR(-ENAMETOOLONG);
+
+    buf += buflen - len - 1;
+    memcpy(buf, nm_get_vpath(rule), len + 1);
+    return buf;
+
+fallback:
+    if (nm_dop && nm_dop->orig_dop && nm_dop->orig_dop->d_dname)
+        return nm_dop->orig_dop->d_dname(dentry, buf, buflen);
+
+    return ERR_PTR(-ENOENT);
+}
 
 /* --- Installers --- */
+
+static inline void nomount_hijack_dentry(struct dentry *dentry, struct nomount_rule *rule)
+{
+    struct nm_dop *nm_dop;
+    if (unlikely(!dentry || !rule || get_nm_dop(dentry->d_op))) return;
+
+    nm_dop = kzalloc(sizeof(*nm_dop), GFP_KERNEL);
+    if (unlikely(!nm_dop)) return;
+
+    nm_dop->signature = NOMOUNT_MAGIC_SIG;
+    nm_dop->rule = rule;
+
+    spin_lock(&dentry->d_lock);
+    if (unlikely(get_nm_dop(dentry->d_op))) {
+        spin_unlock(&dentry->d_lock);
+        kfree(nm_dop);
+        return;
+    }
+
+    nm_dop->orig_dop = dentry->d_op;
+    if (dentry->d_op)
+        memcpy(&nm_dop->fake_dop, dentry->d_op, sizeof(struct dentry_operations));
+
+    nm_dop->fake_dop.d_dname = nomount_hijacked_dname;
+    smp_store_release(&dentry->d_op, &nm_dop->fake_dop);
+    spin_unlock(&dentry->d_lock);
+
+    nm_debug("d_op successfully hijacked for physical dentry %p\n", dentry);
+}
 
 static inline void nomount_hijack_superblock(struct super_block *sb)
 {
@@ -485,6 +536,21 @@ static inline void nomount_hijack_dir_inode(struct nomount_dir_node *dir_node, s
 
 /* --- Cleaners --- */
 
+static void nomount_restore_dentry(struct dentry *dentry)
+{
+    struct nm_dop *nm_dop;
+    if (unlikely(!dentry)) return;
+
+    spin_lock(&dentry->d_lock);
+    nm_dop = get_nm_dop(dentry->d_op);
+    if (nm_dop) {
+        smp_store_release(&dentry->d_op, nm_dop->orig_dop);
+        nm_debug("Successfully cured d_op for dentry %p\n", dentry);
+        kfree_rcu(nm_dop, rcu);
+    }
+    spin_unlock(&dentry->d_lock);
+}
+
 static void nomount_restore_physical_inode(struct nomount_rule *rule)
 {
     struct path target_path;
@@ -567,28 +633,7 @@ static void nomount_restore_superblocks(void)
  * Returns a pointer within the buffer where the virtual path begins.
  */
 char *nomount_handle_dpath(const struct path *path, char *buf, int buflen) 
-{
-    struct nomount_rule *rule;
-    char *res; int len;
-
-    if (unlikely(IS_ERR_OR_NULL(path) || !path->dentry || !path->dentry->d_inode)) return NULL;
-    if (__nomount_should_skip()) return NULL;
-
-    rcu_read_lock();
-    rule = nomount_get_rule_by_inode(path->dentry->d_inode);
-    if (likely(rule)) {
-        len = rule->virt_node.len;
-        if (likely(buflen >= len + 1)) {
-            res = buf + buflen - len - 1;
-            memcpy(res, nm_get_vpath(rule), len + 1);
-            nm_debug("d_path spoofed %s to %s\n", nm_get_rpath(rule), nm_get_vpath(rule));
-            rcu_read_unlock();
-            return res;
-        }
-    }
-    rcu_read_unlock();
-    return NULL;
-}
+{ return NULL; }
 
 /**
  * nomount_handle_permission - Enforce permissions for injected structure
@@ -600,7 +645,25 @@ char *nomount_handle_dpath(const struct path *path, char *buf, int buflen)
  *           0 to fallback to standard VFS permissions.
  */
 int nomount_handle_permission(struct inode *inode, int mask)
-{ return 0; }
+{
+    struct nm_iop *nm_iop;
+    if (unlikely(__nomount_should_skip() || IS_ERR_OR_NULL(inode) || !inode->i_op)) 
+        return 0;
+
+    nm_iop = get_nm_iop(inode->i_op);
+    if (likely(nm_iop)) {
+        if (nm_iop->dir_node) {
+            if ((mask & MAY_EXEC) && !(mask & (MAY_WRITE | MAY_APPEND))) 
+                return 1;
+        }
+        if (nm_iop->rule) {
+            if (nm_iop->rule->flags & NM_FLAG_WHITEOUT) return -ENOENT;
+            if (!(mask & (MAY_WRITE | MAY_APPEND))) return 1;
+        }
+    }
+
+    return 0; 
+}
 
 /**
  * nomount_handle_getname - Redirect paths during filename struct creation
@@ -1229,6 +1292,7 @@ static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len,
         r_path_dentry = dget(r_path_struct_main.dentry);
         nomount_hijack_superblock(r_path_struct_main.dentry->d_sb);
         nomount_hijack_rule_inode(rule, r_inode, false);
+        nomount_hijack_dentry(r_path_struct_main.dentry, rule);
         path_put(&r_path_struct_main);
     }
 
@@ -1246,6 +1310,7 @@ static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len,
 
         nomount_hijack_superblock(path_main.dentry->d_sb);
         if (is_whiteout) nomount_hijack_rule_inode(rule, v_inode, true);
+        nomount_hijack_dentry(path_main.dentry, rule);
         path_put(&path_main);
         v_path_exists = true;
         nm_debug("Resolved physical backing for %s (ino: %lu)\n", nm_get_vpath(rule), rule->virt_node.ino);
