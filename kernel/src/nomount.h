@@ -76,6 +76,14 @@ struct nm_sop {
     struct hlist_node node;
 };
 
+struct nm_dop {
+    struct dentry_operations fake_dop; /* MUST be exactly at offset 0 */
+    const struct dentry_operations *orig_dop;
+    u64 signature;
+    struct nomount_rule *rule;
+    struct rcu_head rcu;
+};
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
     #define IDMAP_ARG struct mnt_idmap *idmap
     #define IDMAP_CALL idmap
@@ -125,6 +133,18 @@ static inline struct nm_sop *get_nm_sop(const struct super_operations *sop) {
     if (copy_from_kernel_nofault(&sig, &nm_sop->signature, sizeof(sig)) == 0) {
         if (sig == NOMOUNT_MAGIC_SIG)
             return nm_sop;
+    }
+    return NULL;
+}
+
+static inline struct nm_dop *get_nm_dop(const struct dentry_operations *dop) {
+    struct nm_dop *nm_dop;
+    u64 sig = 0;
+    if (unlikely(!dop)) return NULL;
+    nm_dop = container_of(dop, struct nm_dop, fake_dop);
+    if (copy_from_kernel_nofault(&sig, &nm_dop->signature, sizeof(sig)) == 0) {
+        if (sig == NOMOUNT_MAGIC_SIG)
+            return nm_dop;
     }
     return NULL;
 }
