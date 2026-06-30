@@ -43,17 +43,6 @@ static DEFINE_MUTEX(nomount_write_mutex);
 #define nm_get_basename(rule) ((rule)->paths + (rule)->b_offset)
 #define nm_get_child_name(array, child) ((char *)&(array)->entries[(array)->num_children] + (child)->name_offset)
 
-/* Bypass for kCFI on Android GKI (Clang 16/17+) and classic LTO CFI */
-#if defined(__clang__)
-    #if __clang_major__ >= 16
-        #define nocfi __attribute__((no_sanitize("cfi", "kcfi")))
-    #else
-        #define nocfi __attribute__((no_sanitize("cfi")))
-    #endif
-#else
-    #define nocfi
-#endif
-
 /* Magic signature "NOMOUNT" in hex to safely identify our structures */
 #define NOMOUNT_MAGIC_SIG 0x4E4F4D4F554E54ULL
 
