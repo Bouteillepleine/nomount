@@ -161,7 +161,7 @@ static __always_inline struct nomount_rule *nomount_get_rule_by_path(const char 
 
 /*** i_op / s_op / f_op Hijacking Hooks ***/
 
-nocfi static int nomount_hijacked_permission(IDMAP_ARG, struct inode *inode, int mask)
+static int nomount_hijacked_permission(IDMAP_ARG, struct inode *inode, int mask)
 {
     struct nm_iop *nm_iop = get_nm_iop(inode->i_op);
     struct nomount_rule *rule = NULL;
@@ -183,7 +183,7 @@ fallback:
     return generic_permission(IDMAP_CALL, inode, mask); 
 }
 
-nocfi static int nomount_hijacked_parent_permission(IDMAP_ARG, struct inode *inode, int mask)
+static int nomount_hijacked_parent_permission(IDMAP_ARG, struct inode *inode, int mask)
 {
     struct nm_iop *nm_iop;
     if (mask == MAY_EXEC) return 0;
@@ -194,7 +194,7 @@ nocfi static int nomount_hijacked_parent_permission(IDMAP_ARG, struct inode *ino
     return generic_permission(IDMAP_CALL, inode, mask);
 }
 
-nocfi static int nomount_hijacked_getattr(IDMAP_ARG, const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
+static int nomount_hijacked_getattr(IDMAP_ARG, const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
 {
     struct inode *inode = d_backing_inode(path->dentry);
     struct nm_iop *nm_iop = get_nm_iop(inode->i_op);
@@ -229,7 +229,7 @@ fallback:
     return 0;
 }
 
-nocfi static int nomount_hijacked_statfs(struct dentry *dentry, struct kstatfs *buf)
+static int nomount_hijacked_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
     struct nm_sop *nm_sop;
     struct nm_iop *nm_iop;
@@ -295,7 +295,7 @@ static NM_ACTOR_RET nomount_actor_proxy(struct dir_context *ctx, const char *nam
     return ret;
 }
 
-nocfi static int nomount_hijacked_iterate_shared(struct file *file, struct dir_context *ctx)
+static int nomount_hijacked_iterate_shared(struct file *file, struct dir_context *ctx)
 {
     struct nm_fop *nm_fop = get_nm_fop(file->f_op);
     struct nm_child_array *array = NULL;
@@ -379,7 +379,7 @@ do_real_iterate:
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
-nocfi static int nomount_hijacked_iterate(struct file *file, struct dir_context *ctx)
+static int nomount_hijacked_iterate(struct file *file, struct dir_context *ctx)
 {
     return nomount_hijacked_iterate_shared(file, ctx);
 }
