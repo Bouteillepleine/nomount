@@ -185,15 +185,13 @@ static int nomount_hijacked_statfs(struct dentry *dentry, struct kstatfs *buf)
 
     if (unlikely(IS_ERR_OR_NULL(dentry))) return -EINVAL;
     inode = d_backing_inode(dentry);
-
     nm_sop = get_nm_sop(dentry->d_sb->s_op);
     if (likely(nm_sop && nm_sop->orig_sop && nm_sop->orig_sop->statfs)) {
         ret = nm_sop->orig_sop->statfs(dentry, buf);
         if (!__nomount_should_skip() && likely(inode)) {
             nm_iop = get_nm_iop(inode->i_op);
-            if (nm_iop && nm_iop->rule && nm_iop->rule->v_fs_type != 0 && ret == 0) {
+            if (nm_iop && nm_iop->rule && nm_iop->rule->v_fs_type != 0 && ret == 0)
                 buf->f_type = READ_ONCE(nm_iop->rule->v_fs_type);
-            }
         }
     }
     return ret;
@@ -558,20 +556,6 @@ static void nomount_restore_superblocks(void)
 /*** VFS Hooks & Injection Logic ***/
 
 /**
- * nomount_handle_dpath - Intercept d_path calls to hide real locations
- * @path: The path struct being resolved
- * @buf: The buffer to write the result into
- * @buflen: Length of the buffer
- *
- * Replaces the real physical path of an injected file with its intended 
- * virtual path to prevent information leaks in Userspace.
- * 
- * Returns a pointer within the buffer where the virtual path begins.
- */
-char *nomount_handle_dpath(const struct path *path, char *buf, int buflen) 
-{ return NULL; }
-
-/**
  * nomount_handle_permission - Enforce permissions for injected structure
  * @inode: The inode being accessed
  * @mask: The requested permission mask
@@ -672,49 +656,7 @@ struct filename *nomount_handle_getname(struct filename *filename)
     return filename;
 }
 
-/**
- * nomount_handle_iterate_dir - Replaces the native VFS iterate function
- * @file: The directory file being iterated
- * @ctx: The VFS directory context
- *
- * This function wraps around the native iterate mechanisms to seamlessly
- * inject virtual directory entries into the directory listing.
- */
-int nomount_handle_iterate_dir(struct file *file, struct dir_context *ctx)
-{
-    if (file->f_op->iterate_shared)
-        return file->f_op->iterate_shared(file, ctx);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
-    else if (file->f_op->iterate)
-        return file->f_op->iterate(file, ctx);
-#endif
-    return -ENOTDIR;
-}
-
 /*** Metadata Spoofing ***/
-
-/**
- * nomount_handle_getattr - Wrapper for vfs_getattr intercept
- * @ret: The return code from the native vfs_getattr execution
- * @path: The path being evaluated
- * @stat: The stat struct populated by the kernel
- *
- * Applies the stat spoofing logic only if the original lookup succeeded.
- * Returns the original return code.
- */
-int nomount_handle_getattr(int ret, const struct path *path, struct kstat *stat)
-{ return ret; }
-
-/**
- * nomount_spoof_statfs - Forge filesystem type data
- * @path: The path being evaluated
- * @buf: The statfs struct to modify
- *
- * Injects the correct Magic Number (e.g., ext4, erofs) to match the 
- * virtual partition, preventing detection via filesystem type checks.
- */
-void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf)
-{}
 
 /**
  * nomount_spoof_mmap_metadata - Forge VMA metadata for /proc/self/maps

@@ -15,7 +15,7 @@
 #endif
 #include <linux/jump_label.h>
 
-#define NOMOUNT_VERSION    10
+#define NOMOUNT_VERSION    12
 #define NOMOUNT_HASH_BITS  12
 #define NOMOUNT_SMALL_HASH_BITS 4
 #define NM_FLAG_IS_DIR      (1 << 1)
@@ -213,12 +213,8 @@ struct nomount_uid_node {
 
 
 /* VFS Hook Prototypes */
-char *nomount_handle_dpath(const struct path *path, char *buf, int buflen);
 int nomount_handle_permission(struct inode *inode, int mask);
 struct filename *nomount_handle_getname(struct filename *name);
-int nomount_handle_iterate_dir(struct file *file, struct dir_context *ctx);
-int nomount_handle_getattr(int ret, const struct path *path, struct kstat *stat);
-void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf);
 bool nomount_spoof_mmap_metadata(struct inode *inode, dev_t *dev, unsigned long *ino);
 
 /* ========================================================================= */
