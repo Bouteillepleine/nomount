@@ -117,26 +117,6 @@ static const char *nomount_build_path_from_pwd(const char *rel_name, size_t name
 }
 
 /**
- * nomount_get_rule_by_inode - Look up the registered rule for an inode
- * @inode: The inode to query
- *
- * NOTE: The caller MUST hold rcu_read_lock() before calling this function
- * and keep it held as long as the returned rule is being used.
- */
-static __always_inline struct nomount_rule *nomount_get_rule_by_inode(struct inode *inode) {
-    struct nm_inode_node *inode_node;
-    hash_for_each_possible_rcu(nomount_inodes_ht, inode_node, node, inode->i_ino) {
-        if (inode_node->ino == inode->i_ino && inode_node->dev == inode->i_sb->s_dev) {
-            if (inode_node->type & NM_INO_TYPE_REAL)
-                return container_of(inode_node, struct nomount_rule, real_node);
-            if (inode_node->type & NM_INO_TYPE_VIRTUAL)
-                return container_of(inode_node, struct nomount_rule, virt_node);
-        }
-    }
-    return NULL;
-}
-
-/**
  * nomount_get_rule_by_path - Look up the rule for a virtual path
  * @pathname: The requested virtual path
  * @len: The length of the requested path
@@ -793,27 +773,18 @@ void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf)
  */
 bool nomount_spoof_mmap_metadata(struct inode *inode, dev_t *dev, unsigned long *ino)
 {
-    struct nm_inode_node *inode_node;
-    struct nomount_rule *rule;
-
+    struct nm_iop *nm_iop;
     if (unlikely(__nomount_should_skip() || IS_ERR_OR_NULL(inode) ||
-                 IS_ERR_OR_NULL(inode->i_sb) || IS_ERR_OR_NULL(dev) || IS_ERR_OR_NULL(ino))) 
+                 IS_ERR_OR_NULL(dev) || IS_ERR_OR_NULL(ino) || !inode->i_op)) 
         return false;
 
-    rcu_read_lock();
-    hash_for_each_possible_rcu(nomount_inodes_ht, inode_node, node, inode->i_ino) {
-        if (inode_node->ino == inode->i_ino && inode_node->dev == inode->i_sb->s_dev) {
-            if (inode_node->type & NM_INO_TYPE_REAL) {
-                rule = container_of(inode_node, struct nomount_rule, real_node);
-                *dev = READ_ONCE(rule->virt_node.dev);
-                *ino = READ_ONCE(rule->virt_node.ino);
-                rcu_read_unlock();
-                return true;
-            }
-            break;
-        }
+    nm_iop = get_nm_iop(inode->i_op);
+    if (likely(nm_iop && nm_iop->rule)) {
+        *dev = READ_ONCE(nm_iop->rule->virt_node.dev);
+        *ino = READ_ONCE(nm_iop->rule->virt_node.ino);
+        return true;
     }
-    rcu_read_unlock();
+
     return false;
 }
 
