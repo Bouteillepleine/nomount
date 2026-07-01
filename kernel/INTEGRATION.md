@@ -46,7 +46,7 @@ diff --git a/fs/Makefile b/fs/Makefile
 
 ## 2. Path Lookup, Access Control, and Permissions.
 *    **Files:** `fs/namei.c`
-*    **Hooks:** `getname_flags`, `getname_kernel`, `generic_permission` and `inode_permission`
+*    **Hooks:** `getname_flags`, `getname_kernel` and `inode_permission`
 *    **Purpose:** Intercept text strings (paths) originating from both Userspace and Kernelspace before the VFS converts them into physical structures (`dentry`/`inode`). Additionally, ensure that injected files can be traversed and read while correctly simulating the typical attributes of system partitions.
 *   **Mechanism:**
     *   In `namei.c`, `nomount_getname_hook` is executed immediately after the path string is allocated in the kernel. `getname_flags` intercepts standard application traffic, while `getname_kernel` catches internal system requests (e.g., `request_firmware`). If the path matches an active rule, the original string is replaced with the actual path of the redirected file. The rest of the kernel processes the call without knowing that it was tricked.
@@ -95,19 +95,6 @@ diff --git a/fs/namei.c b/fs/namei.c
  	audit_getname(result);
  
  	return result;
-@@ -xxx,xx +xxx,xx @@ int generic_permission(struct inode *inode, int mask)
- {
- 	int ret;
- 
-+#ifdef CONFIG_NOMOUNT
-+	int nm_perm = nomount_handle_permission(inode, mask);
-+	if (unlikely(nm_perm < 0)) return nm_perm;
-+	if (unlikely(nm_perm > 0)) return 0;
-+#endif
-+
- 	/*
- 	 * Do the basic permission checks.
- 	 */
 @@ -xxx,xx +xxx,xx @@ int inode_permission(struct inode *inode, int mask)
  {
  	int retval;
@@ -125,126 +112,8 @@ diff --git a/fs/namei.c b/fs/namei.c
 
 ---
 
-## 3. Inverse Resolution and Visibility
-*   **File:** `fs/d_path.c`
-*   **Hook:** `d_path`
-*   **Purpose:** Avoid information leaks and falsify real paths through virtual paths.
-*   **Mechanism:** If the kernel tries to resolve the path of a file that was injected by us, `nomount_handle_dpath` intercepts the output and returns the "Virtual Path" instead of the actual physical location (e.g. returning `/system/bin/su` instead of `/data/adb/modules/test/su`).
-*   **Integration:**
-
-#### `fs/d_path.c`:
-
-```diff
-diff --git a/fs/d_path.c b/fs/d_path.c
---- a/fs/d_path.c
-+++ b/fs/d_path.c
-@@ -xxx,xx +xxx,xx @@ static void get_fs_root_rcu(struct fs_struct *fs, struct path *root)
- 	} while (read_seqcount_retry(&fs->seq, seq));
- }
- 
-+#ifdef CONFIG_NOMOUNT
-+extern char *nomount_handle_dpath(const struct path *path, char *buf, int buflen);
-+#endif
-+
- /**
-  * d_path - return the path of a dentry
-  * @path: path to report
-@@ -xxx,x +xxx,xx @@ char *d_path(const struct path *path, char *buf, int buflen)
-
-+#ifdef CONFIG_NOMOUNT
-+	char *nm_path = nomount_handle_dpath(path, buf, buflen);
-+	if (unlikely(nm_path)) {
-+		return nm_path;
-+	}
-+#endif
-+
- 	/*
- 	 * We have various synthetic filesystems that never get mounted.  On
- 	 * these filesystems dentries are never used for lookup purposes, and
-```
-
----
-
-## 4. Directory Listing
-*   **File:** `fs/readdir.c`
-*   **Hooks:** `iterate_dir`
-*   **Purpose:** Allow commands like `ls` or listing APIs to seamlessly see virtual files injected into legitimate system directories.
-*   **Mechanism:** Instead of manually manipulating userspace buffers in the `getdents` syscalls, NoMount now hooks directly into the directory iteration engine (`iterate_dir`). The wrapper acts as a smart proxy: it first allows the native filesystem to read the physical disk without interference. By tracking the directory offset (`ctx->pos`), NoMount detects when the native iteration reaches the End of File (EOF) or pauses. Once the physical files are fully processed, it seamlessly inject virtual entries using the kernel's native `dir_emit()` function.
-*   **Integration:**
-
-#### `fs/readdir.c`:
-
-```diff
-diff --git a/fs/readdir.c b/fs/readdir.c
---- a/fs/readdir.c
-+++ b/fs/readdir.c
-@@ -xx,xx +xx,xx @@
- 	unsafe_copy_to_user(dst, src, len, label);		\
- } while (0)
- 
-+#ifdef CONFIG_NOMOUNT
-+extern int nomount_handle_iterate_dir(struct file *file, struct dir_context *ctx);
-+#endif
- 
- int iterate_dir(struct file *file, struct dir_context *ctx)
- {
-@@ -xx,xx +xx,xx @@ int iterate_dir(struct file *file, struct dir_context *ctx)
- 	res = -ENOENT;
- 	if (!IS_DEADDIR(inode)) {
- 		ctx->pos = file->f_pos;
-+#ifdef CONFIG_NOMOUNT
-+		res = nomount_handle_iterate_dir(file, ctx);
-+#else
- 		if (shared)
- 			res = file->f_op->iterate_shared(file, ctx);
- 		else
- 			res = file->f_op->iterate(file, ctx);
-+#endif
- 		file->f_pos = ctx->pos;
- 		fsnotify_access(file);
- 		file_accessed(file);
-```
-
----
-
-## 5. Metadata Spoofing (Stat & Mmap)
+## 3. Metadata Spoofing (Stat & Mmap)
 To be undetectable, the metadata of the files and file systems must match their virtual location.
-
-*   **File Attributes (`fs/stat.c`):**
-    *   **Hook:** `vfs_getattr`
-    *   **Mechanism:** A *Wrapper* pattern is used. The `nomount_handle_getattr` hook captures the native output of `vfs_getattr_nosec`. If the original read was successful, it overwrites the `inode` and `device id` (dev) in the `kstat` structure before returning it to the user.
-	*   **Integration:**
-
-#### `fs/stat.c`
-
-```diff
-diff --git a/fs/stat.c b/fs/stat.c
---- a/fs/stat.c
-+++ b/fs/stat.c
-@@ -xxx,xx +xxx,xx @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
- }
- EXPORT_SYMBOL(vfs_getattr_nosec);
- 
-+#ifdef CONFIG_NOMOUNT
-+extern int nomount_handle_getattr(int ret, const struct path *path, struct kstat *stat);
-+#endif
-+
- /*
-  * vfs_getattr - Get the enhanced basic attributes of a file
-  * @path: The file of interest
-@@ -xxx,xx +xxx,xx @@ int vfs_getattr(const struct path *path, struct kstat *stat,
- 	retval = security_inode_getattr(path);
- 	if (retval)
- 		return retval;
-+#ifdef CONFIG_NOMOUNT
-+        return nomount_handle_getattr(vfs_getattr_nosec(path, stat, request_mask, query_flags), path, stat);
-+#else
- 	return vfs_getattr_nosec(path, stat, request_mask, query_flags);
-+#endif
- }
- EXPORT_SYMBOL(vfs_getattr);
- 
-```
 
 *   **Memory Maps (`fs/proc/task_mmu.c`):**
     *   **Hook:** `show_map_vma`
@@ -280,38 +149,4 @@ diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
 
 ```
 
-*   **Filesystem Attributes (`fs/statfs.c`):**
-    *   **Hook:** `vfs_statfs`
-    *   **Mechanism:** Alter the `kstatfs` structure. If an application requests partition metadata (e.g. to check if the file is on an `ext4` or `erofs` volume), the `nomount_spoof_statfs` hook injects the "Magic Number" (FS type) corresponding to the desired virtual partition.
-	*  **Integration:**
-
-#### `fs/statfs.c`:
-
-```diff
-diff --git a/fs/statfs.c b/fs/statfs.c
---- a/fs/statfs.c
-+++ b/fs/statfs.c
-@@ -xx,xx +xx,xx @@
- #include <linux/compat.h>
- #include "internal.h"
- 
-+#ifdef CONFIG_NOMOUNT
-+extern void nomount_spoof_statfs(const struct path *path, struct kstatfs *buf);
-+#endif
-+
- static int flags_by_mnt(int mnt_flags)
- {
- 	int flags = 0;
-@@ -xxx,xx +xxx,xx @@ int vfs_statfs(const struct path *path, struct kstatfs *buf)
- 	error = statfs_by_dentry(path->dentry, buf);
- 	if (!error)
- 		buf->f_flags = calculate_f_flags(path->mnt);
-+#ifdef CONFIG_NOMOUNT
-+	nomount_spoof_statfs(path, buf);
-+#endif
- 	return error;
- }
- EXPORT_SYMBOL(vfs_statfs);
-
-```
 ---
