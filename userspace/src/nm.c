@@ -56,7 +56,7 @@ void c_main(long *sp) {
                 cursor = payload;
             }
 
-            if (target_cmd == 3) {
+            if (target_cmd == 2) {
                 /* Set NM_FLAG_WHITEOUT (4) if 'w', else 0 */
                 *(unsigned int*)cursor = (cmd == 'w') ? 4 : 0; 
                 *(unsigned short*)(cursor + 4) = v_len;
