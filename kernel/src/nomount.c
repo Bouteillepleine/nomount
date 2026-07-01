@@ -217,8 +217,8 @@ static int nomount_hijacked_statfs(struct dentry *dentry, struct kstatfs *buf)
         ret = nm_sop->orig_sop->statfs(dentry, buf);
         if (!__nomount_should_skip() && likely(inode)) {
             nm_iop = __get_nm(inode->i_op, struct nm_iop, fake_iop);
-            if (nm_iop && nm_iop->rule && nm_iop->rule->v_fs_type != 0 && ret == 0)
-                buf->f_type = READ_ONCE(nm_iop->rule->v_fs_type);
+            if (nm_iop && nm_iop->rule && nm_iop->rule->v_statfs.f_type != 0 && ret == 0)
+                *buf = nm_iop->rule->v_statfs;
         }
     }
     return ret;
@@ -954,7 +954,8 @@ static int nomount_generate_virtual_topology(struct nomount_rule *rule)
     char *v_tmp = nm_get_vpath(rule), *r_tmp = nm_get_rpath(rule);
     char *slash_v, *slash_r, *b_slash, *slashes_v[32], *slashes_r[32];
     int cur_v_len = rule->virt_node.len, cur_r_len = rule->real_node.len;
-    unsigned long inherited_dev = 0, inherited_fs_type = 0;
+    unsigned long inherited_dev = 0;
+    struct kstatfs inherited_statfs;
     unsigned long current_parent_ino; dev_t current_parent_dev;
     const char *b_name_inter, *child_name;
     int p_count = 0, err = 0;
@@ -962,6 +963,7 @@ static int nomount_generate_virtual_topology(struct nomount_rule *rule)
     size_t child_name_len;
     u32 child_name_hash, h_inter;
 
+    memset(&inherited_statfs, 0, sizeof(struct kstatfs));
     while (p_count < 32) {
         slash_v = strrchr(v_tmp, '/');
         slash_r = r_tmp ? strrchr(r_tmp, '/') : NULL; 
@@ -1006,7 +1008,7 @@ static int nomount_generate_virtual_topology(struct nomount_rule *rule)
         hash_for_each_possible(nomount_rules_ht, ex, vpath_node, h_inter) {
             if (ex->virt_node.len == cur_v_len && memcmp(nm_get_vpath(ex), v_tmp, cur_v_len) == 0) {
                 inherited_dev = ex->virt_node.dev;
-                inherited_fs_type = ex->v_fs_type;
+                inherited_statfs = ex->v_statfs;
                 current_parent_ino = ex->virt_node.ino;
                 current_parent_dev = ex->virt_node.dev;
                 inter_exists = true;
@@ -1028,11 +1030,9 @@ static int nomount_generate_virtual_topology(struct nomount_rule *rule)
             struct inode *v_inode = d_backing_inode(p_path.dentry);
             inherited_dev = p_path.dentry->d_sb->s_dev;
             if (p_path.dentry->d_sb->s_op->statfs) {
-                struct kstatfs st;
-                p_path.dentry->d_sb->s_op->statfs(p_path.dentry, &st);
-                inherited_fs_type = st.f_type;
+                p_path.dentry->d_sb->s_op->statfs(p_path.dentry, &inherited_statfs);
             } else {
-                inherited_fs_type = p_path.dentry->d_sb->s_magic;
+                inherited_statfs.f_type = p_path.dentry->d_sb->s_magic;
             }
             current_parent_ino = v_inode->i_ino;
             current_parent_dev = v_inode->i_sb->s_dev;
@@ -1111,7 +1111,7 @@ static int nomount_generate_virtual_topology(struct nomount_rule *rule)
                     nm_basename_filter[bh & (NM_FILTER_SIZE - 1)]++;
 
                 irule->virt_node.dev = inherited_dev;
-                irule->v_fs_type = inherited_fs_type;
+                irule->v_statfs = inherited_statfs;
                 hash_add_rcu(nomount_rules_ht, &irule->vpath_node, irule->v_hash);
                 if (irule->real_node.ino) hash_add_rcu(nomount_inodes_ht, &irule->real_node.node, irule->real_node.ino);
                 hash_add_rcu(nomount_inodes_ht, &irule->virt_node.node, irule->virt_node.ino);
@@ -1125,7 +1125,7 @@ static int nomount_generate_virtual_topology(struct nomount_rule *rule)
 
     if (likely(err == 0)) {
         rule->virt_node.dev = inherited_dev;
-        rule->v_fs_type = inherited_fs_type;
+        rule->v_statfs = inherited_statfs;
     }
 
     return err;
@@ -1202,11 +1202,10 @@ static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len,
         rule->virt_node.ino = v_inode->i_ino;
         rule->virt_node.dev = path_main.dentry->d_sb->s_dev;
         if (path_main.dentry->d_sb->s_op->statfs) {
-            struct kstatfs st;
-            path_main.dentry->d_sb->s_op->statfs(path_main.dentry, &st);
-            rule->v_fs_type = st.f_type;
+            path_main.dentry->d_sb->s_op->statfs(path_main.dentry, &rule->v_statfs);
         } else {
-            rule->v_fs_type = path_main.dentry->d_sb->s_magic;
+            memset(&rule->v_statfs, 0, sizeof(struct kstatfs));
+            rule->v_statfs.f_type = path_main.dentry->d_sb->s_magic;
         }
 
         nomount_hijack_superblock(path_main.dentry->d_sb);
