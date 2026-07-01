@@ -678,22 +678,19 @@ int nomount_handle_permission(struct inode *inode, int mask)
 struct filename *nomount_handle_getname(struct filename *filename)
 {
     struct nomount_rule *rule;
-    const char *check_name, *name, *page_buf = NULL;
-    size_t name_len, r_len;
-    u32 b_hash;
+    const char *name, *basename, *page_buf = NULL;
+    size_t name_len, r_len, b_len;
     char fast_buf[512];
-
-    if (unlikely(__nomount_should_skip() || IS_ERR_OR_NULL(filename) || !filename->name))
-        return filename;
+    u32 b_hash;
 
     name = filename->name;
     name_len = strlen(name);
-    while (name_len > 1 && name[name_len - 1] == '/') { name_len--; ((char *)name)[name_len] = '\0'; }
+    while (name_len > 1 && name[name_len - 1] == '/') name_len--;
     if (unlikely(name_len <= 1)) return filename;
 
-    rcu_read_lock();
     if (unlikely(name[0] == '/' && !list_empty(&nomount_private_dirs_list) && current_uid().val >= AID_APP_START)) {
         struct nomount_dir_node *priv_dir;
+        rcu_read_lock();
         list_for_each_entry_rcu(priv_dir, &nomount_private_dirs_list, private_list) {
             size_t len = priv_dir->dir.len;
             if (name_len >= len && name[1] == priv_dir->dir_path[1] && memcmp(name, priv_dir->dir_path, len) == 0) {
@@ -704,12 +701,13 @@ struct filename *nomount_handle_getname(struct filename *filename)
                 }
             }
         }
+        rcu_read_unlock();
     }
-    rcu_read_unlock();
 
-    check_name = strrchr(name, '/');
-    if (check_name) check_name++; else check_name = name;
-    b_hash = full_name_hash(NULL, check_name, name_len - (check_name - name));
+    basename = name + name_len;
+    while (basename > name && *(basename - 1) != '/') basename--;
+    b_len = (name + name_len) - basename;
+    b_hash = full_name_hash(NULL, basename, b_len);
     if (likely(nm_basename_filter[b_hash & (NM_FILTER_SIZE - 1)] == 0)) return filename;
 
     r_len = name_len;
@@ -724,6 +722,7 @@ struct filename *nomount_handle_getname(struct filename *filename)
         u16 real_len = rule->real_node.len;
         bool is_whiteout = (rule->flags & NM_FLAG_WHITEOUT);
         rcu_read_unlock();
+
         if (likely(!is_whiteout)) {
             nm_debug("Redirected: %s -> %s\n", name, nm_get_rpath(rule));
             memcpy((char *)filename->name, nm_get_rpath(rule), real_len);
@@ -732,6 +731,7 @@ struct filename *nomount_handle_getname(struct filename *filename)
     } else {
         rcu_read_unlock();
     }
+
     if (page_buf && page_buf != fast_buf) __putname(page_buf);
     return filename;
 }
