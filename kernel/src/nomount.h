@@ -128,7 +128,7 @@ struct nomount_rule {
     struct nm_inode_node virt_node;
     struct hlist_node vpath_node;
     struct nomount_dir_node *parent_dir;
-    u32 v_fs_type;
+    struct kstatfs v_statfs;
     u32 v_hash;
     u16 b_offset; 
     u8  flags;
