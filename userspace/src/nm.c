@@ -89,13 +89,9 @@ void c_main(long *sp) {
 
     } else if (cmd == 'v') {
         if (do_nm_cmd(fd, nm_family, 1, 0, (void *)0, 0, 5) > 0) { 
-            unsigned int *ver = get_attr(rx_buf, 5);
-            if (ver) {
-                unsigned int v = *ver; char v_str[4] = {0};
-                unsigned char tens = ((v << 7) + (v << 6) + (v << 3) + (v << 2) + v) >> 11;
-                v = v - ((tens << 3) + (tens << 1));
-                v_str[0] = tens + '0'; v_str[1] = v + '0'; v_str[2] = '\n';
-                print_str(v_str);
+            char *ver_str = get_attr(rx_buf, 5);
+            if (ver_str) {
+                print_str(ver_str); print_str("\n");
                 exit_code = 0; goto do_exit;
             }
         }

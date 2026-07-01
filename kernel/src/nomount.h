@@ -15,7 +15,7 @@
 #endif
 #include <linux/jump_label.h>
 
-#define NOMOUNT_VERSION    12
+#define NOMOUNT_VERSION    "12"
 #define NOMOUNT_HASH_BITS  12
 #define NOMOUNT_SMALL_HASH_BITS 4
 #define NM_FLAG_IS_DIR      (1 << 1)
@@ -178,7 +178,7 @@ enum {
     NOMOUNT_ATTR_REAL_PATH,     /* String (NLA_NUL_STRING) */
     NOMOUNT_ATTR_FLAGS,         /* u32 (NLA_U32) */
     NOMOUNT_ATTR_UID,           /* u32 (NLA_U32) */
-    NOMOUNT_ATTR_VERSION,       /* u32 (NLA_U32) */
+    NOMOUNT_ATTR_VERSION,       /* String (NLA_NUL_STRING) */
     NOMOUNT_ATTR_PAYLOAD,       /* Binary payload for GET_LIST (NLA_BINARY) */
     __NOMOUNT_ATTR_MAX,
 };
