@@ -1564,7 +1564,7 @@ static int nomount_genl_get_version(struct sk_buff *skb, struct genl_info *info)
         return -EMSGSIZE;
     }
 
-    ret = nla_put_u32(msg, NOMOUNT_ATTR_VERSION, NOMOUNT_VERSION);
+    ret = nla_put_string(msg, NOMOUNT_ATTR_VERSION, NOMOUNT_VERSION);
     if (ret) {
         genlmsg_cancel(msg, hdr);
         nlmsg_free(msg);
@@ -1580,7 +1580,7 @@ static const struct nla_policy nomount_genl_policy[NOMOUNT_ATTR_MAX + 1] = {
     [NOMOUNT_ATTR_REAL_PATH]    = { .type = NLA_NUL_STRING, .len = PATH_MAX },
     [NOMOUNT_ATTR_FLAGS]        = { .type = NLA_U32 },
     [NOMOUNT_ATTR_UID]          = { .type = NLA_U32 },
-    [NOMOUNT_ATTR_VERSION]      = { .type = NLA_U32 },
+    [NOMOUNT_ATTR_VERSION]      = { .type = NLA_NUL_STRING },
     [NOMOUNT_ATTR_PAYLOAD]      = { .type = NLA_BINARY },
 };
 
