@@ -20,9 +20,6 @@
 #define NOMOUNT_SMALL_HASH_BITS 4
 #define NM_FLAG_IS_DIR      (1 << 1)
 #define NM_FLAG_WHITEOUT    (1 << 2)
-#define NM_INO_TYPE_REAL    (1 << 0)
-#define NM_INO_TYPE_VIRTUAL (1 << 1)
-#define NM_INO_TYPE_DIR     (1 << 2)
 
 /* logs */
 #define nm_debug(fmt, ...) printk(KERN_DEBUG "NoMount: [DEBUG] " fmt, ##__VA_ARGS__)
@@ -30,18 +27,12 @@
 #define nm_warn(fmt, ...) printk(KERN_WARNING "NoMount: [WARN] " fmt, ##__VA_ARGS__)
 #define nm_err(fmt, ...)  printk(KERN_ERR "NoMount: [ERROR] " fmt, ##__VA_ARGS__)
 
-static DEFINE_HASHTABLE(nomount_rules_ht,     NOMOUNT_HASH_BITS);
-static DEFINE_HASHTABLE(nomount_inodes_ht,    NOMOUNT_HASH_BITS);
-static DEFINE_HASHTABLE(nomount_uid_ht,       NOMOUNT_SMALL_HASH_BITS);
-static DEFINE_HASHTABLE(nomount_sb_ht,        NOMOUNT_SMALL_HASH_BITS);
+static DEFINE_HASHTABLE(nomount_rules_ht, NOMOUNT_HASH_BITS);
+static DEFINE_HASHTABLE(nomount_uid_ht,   NOMOUNT_SMALL_HASH_BITS);
+static DEFINE_HASHTABLE(nomount_sb_ht,    NOMOUNT_SMALL_HASH_BITS);
 static LIST_HEAD(nomount_private_dirs_list);
+static LIST_HEAD(nomount_all_dirs_list);
 static DEFINE_MUTEX(nomount_write_mutex);
-
-/* * Helpers to dynamically calculate the memory address of the strings */
-#define nm_get_vpath(rule) ((rule)->paths)
-#define nm_get_rpath(rule) ((rule)->paths + (rule)->virt_node.len + 1)
-#define nm_get_basename(rule) ((rule)->paths + (rule)->b_offset)
-#define nm_get_child_name(array, child) ((char *)&(array)->entries[(array)->num_children] + (child)->name_offset)
 
 /* Magic signature "NOMOUNT" in hex to safely identify our structures */
 #define NOMOUNT_MAGIC_SIG 0x4E4F4D4F554E54ULL
@@ -82,14 +73,6 @@ struct nm_dop {
     struct rcu_head rcu;
 };
 
-struct nm_inode_node {
-    struct hlist_node node;
-    unsigned long ino;
-    dev_t dev;
-    u8 type;
-    u16 len;
-};
-
 struct nomount_child_name {
     u32 fake_ino;
     u16 name_offset;
@@ -116,34 +99,37 @@ struct nm_child_array {
 };
 
 struct nomount_dir_node {
-    struct nm_inode_node dir;
+    struct list_head list;
     struct list_head private_list;
     struct nm_child_array __rcu *child_array;
+    u16 dir_len;
     char *dir_path;
     bool is_private;
 };
 
 struct nomount_rule {
-    struct nm_inode_node real_node; 
-    struct nm_inode_node virt_node;
     struct hlist_node vpath_node;
     struct nomount_dir_node *parent_dir;
+    struct nomount_dir_node *this_dir;
     struct kstatfs v_statfs;
+    unsigned long v_ino;
+    dev_t v_dev;
     u32 v_hash;
-    u16 b_offset; 
+    u16 v_len;
+    u16 r_len;
+    u16 b_offset;
     u8  flags;
 
-    /* * FLEXIBLE ARRAY MEMBER:
+    /* * FLEXIBLE ARRAY MEMBER: 
      * Memory Layout: [ struct ] "virtual_path\0real_path\0"
      */
     char paths[]; 
-} __attribute__((packed));
+};
 
 struct nomount_uid_node {
     struct hlist_node node;
     uid_t uid;
 };
-
 
 /* VFS Hook Prototypes */
 int nomount_handle_permission(struct inode *inode, int mask);
@@ -185,8 +171,8 @@ enum {
 
 #define NOMOUNT_ATTR_MAX (__NOMOUNT_ATTR_MAX - 1)
 
-/* * Compat macros for Generic Netlink Policy API changes.
- * Linux 4.20 moved the policy pointer from genl_ops to genl_family.
+/* * Compat macros.
+ * Linux 5.2.0 moved the policy pointer from genl_ops to genl_family.
  */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 #define NM_OPS_POLICY(p)    .policy = (p),
@@ -196,7 +182,8 @@ enum {
 #define NM_FAMILY_POLICY(p) .policy = (p),
 #endif
 
-/* Application UID start */
-#define AID_APP_START 10000
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
+#define copy_from_kernel_nofault probe_kernel_read
+#endif
 
 #endif /* _LINUX_NOMOUNT_H */
