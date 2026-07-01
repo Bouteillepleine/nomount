@@ -251,10 +251,10 @@ static NM_ACTOR_RET nomount_actor_proxy(struct dir_context *ctx, const char *nam
 {
     struct nomount_proxy_ctx *proxy = container_of(ctx, struct nomount_proxy_ctx, ctx);
     struct nm_child_array *array = proxy->array;
-    u32 i;
     NM_ACTOR_RET ret;
 
-    if (array) {
+    if (likely(array && array->num_whiteouts > 0)) {
+        u32 i;
         for (i = 0; i < array->num_children; i++) {
             struct nomount_child_name *child = &array->entries[i];
             char *child_name_str;
@@ -914,7 +914,12 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
         for (i = 0; i < old_num; i++) {
             char *child_name_str = nm_get_child_name(old_array, &old_array->entries[i]);
             if (strlen(child_name_str) == name_len && !memcmp(child_name_str, name, name_len)) {
+                bool was_whiteout = (old_array->entries[i].flags & NM_FLAG_WHITEOUT);
+                bool is_whiteout = (rule->flags & NM_FLAG_WHITEOUT);
                 old_array->entries[i].flags = rule->flags;
+                if (was_whiteout && !is_whiteout) old_array->num_whiteouts--;
+                else if (!was_whiteout && is_whiteout) old_array->num_whiteouts++;
+
                 return;
             }
         }
@@ -931,6 +936,8 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
     atomic_set(&new_array->refcnt, 1);
     new_array->num_children = old_num + 1;
     new_array->heap_size = new_heap_size;
+    new_array->num_whiteouts = old_array ? old_array->num_whiteouts : 0;
+    if (rule->flags & NM_FLAG_WHITEOUT) new_array->num_whiteouts++;
     new_heap = (char *)&new_array->entries[old_num + 1];
 
     if (old_array) {
@@ -986,6 +993,8 @@ static void __nomount_delete_child_locked(struct nomount_dir_node *dir_node, uns
         atomic_set(&new_array->refcnt, 1);
         new_array->num_children = num - 1;
         new_array->heap_size = new_heap_size;
+        new_array->num_whiteouts = old_array->num_whiteouts;
+        if (old_array->entries[found_idx].flags & NM_FLAG_WHITEOUT) new_array->num_whiteouts--;
         old_heap = (char *)&old_array->entries[num];
         new_heap = (char *)&new_array->entries[num - 1];
 

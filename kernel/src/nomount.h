@@ -167,6 +167,7 @@ struct nomount_child_name {
 struct nm_child_array {
     atomic_t refcnt;
     u32 num_children;
+    u32 num_whiteouts;      /* Tracks the number of whiteouts */
     u32 heap_size;          /* Tracks the total size of the string block */
     struct rcu_head rcu;
     struct nomount_child_name entries[]; /* Flexible array member */
