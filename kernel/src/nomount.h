@@ -46,8 +46,6 @@ static DEFINE_MUTEX(nomount_write_mutex);
 /* Magic signature "NOMOUNT" in hex to safely identify our structures */
 #define NOMOUNT_MAGIC_SIG 0x4E4F4D4F554E54ULL
 
-/* --- Hijack Data Structures --- */
-
 struct nm_iop {
     struct inode_operations fake_iop; /* MUST be exactly at offset 0 */
     const struct inode_operations *orig_iop;
@@ -83,71 +81,6 @@ struct nm_dop {
     struct nomount_rule *rule;
     struct rcu_head rcu;
 };
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
-    #define IDMAP_ARG struct mnt_idmap *idmap
-    #define IDMAP_CALL idmap
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
-    #define IDMAP_ARG struct user_namespace *mnt_userns
-    #define IDMAP_CALL mnt_userns
-#else
-    #define IDMAP_ARG /* Nothing */
-    #define IDMAP_CALL /* Nothing */
-#endif
-
-/* --- Hijack Extractors --- */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
-#define copy_from_kernel_nofault probe_kernel_read
-#endif
-
-static inline struct nm_iop *get_nm_iop(const struct inode_operations *iop) {
-    struct nm_iop *nm_iop;
-    u64 sig = 0;
-    if (unlikely(!iop)) return NULL;
-    nm_iop = container_of(iop, struct nm_iop, fake_iop);
-    if (copy_from_kernel_nofault(&sig, &nm_iop->signature, sizeof(sig)) == 0) {
-        if (sig == NOMOUNT_MAGIC_SIG)
-            return nm_iop;
-    }
-    return NULL;
-}
-
-static inline struct nm_fop *get_nm_fop(const struct file_operations *fop) {
-    struct nm_fop *nm_fop;
-    u64 sig = 0;
-
-    if (unlikely(!fop)) return NULL;
-    nm_fop = container_of(fop, struct nm_fop, fake_fop);
-    if (copy_from_kernel_nofault(&sig, &nm_fop->signature, sizeof(sig)) == 0) {
-        if (sig == NOMOUNT_MAGIC_SIG)
-            return nm_fop;
-    }
-    return NULL;
-}
-
-static inline struct nm_sop *get_nm_sop(const struct super_operations *sop) {
-    struct nm_sop *nm_sop;
-    u64 sig = 0;
-    if (unlikely(!sop)) return NULL;
-    nm_sop = container_of(sop, struct nm_sop, fake_sop);
-    if (copy_from_kernel_nofault(&sig, &nm_sop->signature, sizeof(sig)) == 0) {
-        if (sig == NOMOUNT_MAGIC_SIG)
-            return nm_sop;
-    }
-    return NULL;
-}
-
-static inline struct nm_dop *get_nm_dop(const struct dentry_operations *dop) {
-    struct nm_dop *nm_dop;
-    u64 sig = 0;
-    if (unlikely(!dop)) return NULL;
-    nm_dop = container_of(dop, struct nm_dop, fake_dop);
-    if (copy_from_kernel_nofault(&sig, &nm_dop->signature, sizeof(sig)) == 0) {
-        if (sig == NOMOUNT_MAGIC_SIG)
-            return nm_dop;
-    }
-    return NULL;
-}
 
 struct nm_inode_node {
     struct hlist_node node;
