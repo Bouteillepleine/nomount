@@ -118,7 +118,7 @@ static const char *nomount_build_path_from_pwd(const char *rel_name, size_t name
 
 /* * Helpers to dynamically calculate the memory address of the strings */
 #define nm_get_vpath(rule) ((rule)->paths)
-#define nm_get_rpath(rule) ((rule)->paths + (rule)->virt_node.len + 1)
+#define nm_get_rpath(rule) ((rule)->paths + (rule)->v_len + 1)
 #define nm_get_basename(rule) ((rule)->paths + (rule)->b_offset)
 #define nm_get_child_name(array, child) ((char *)&(array)->entries[(array)->num_children] + (child)->name_offset)
 
@@ -440,7 +440,7 @@ int nomount_handle_permission(struct inode *inode, int mask)
  * 
  * Returns the modified filename struct, or the original if no match.
  */
-static struct filename *nomount_handle_getname(struct filename *filename)
+struct filename *nomount_handle_getname(struct filename *filename)
 {
     struct nomount_rule *rule;
     const char *name, *basename, *page_buf = NULL;
