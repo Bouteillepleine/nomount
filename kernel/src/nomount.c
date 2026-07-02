@@ -603,8 +603,13 @@ static inline void nomount_hijack_rule_inode(struct nomount_rule *rule, struct i
         if (nm_iop->fake_iop.permission || is_whiteout) 
             nm_iop->fake_iop.permission = nomount_hijacked_permission;
 
+        nm_iop->had_fastperm = (inode->i_opflags & IOP_FASTPERM) != 0;
+        nm_iop->had_private_flag = (inode->i_flags & S_PRIVATE) != 0;
+
         smp_store_release(&inode->i_op, &nm_iop->fake_iop);
+
         inode->i_opflags &= ~IOP_FASTPERM;
+        inode->i_flags |= S_PRIVATE;
         nm_debug("i_op successfully hijacked for %s inode %lu\n", 
                  is_whiteout ? "whiteout (virtual)" : "physical", inode->i_ino);
     }
@@ -645,9 +650,13 @@ static inline void nomount_hijack_dir_inode(struct nomount_dir_node *dir_node, s
         nm_iop->orig_iop = inode->i_op;
         nm_iop->signature = NOMOUNT_MAGIC_SIG;
         nm_iop->dir_node = dir_node;
+        nm_iop->had_fastperm = (inode->i_opflags & IOP_FASTPERM) != 0;
+        nm_iop->had_private_flag = (inode->i_flags & S_PRIVATE) != 0;
+
         nm_iop->fake_iop.permission = nomount_hijacked_parent_permission;
         smp_store_release(&inode->i_op, &nm_iop->fake_iop);
         inode->i_opflags &= ~IOP_FASTPERM;
+        inode->i_flags |= S_PRIVATE;
         nm_debug("i_op successfully hijacked for parent dir (ino: %lu)\n", inode->i_ino);
     }
 }
@@ -679,7 +688,8 @@ static void nomount_restore_physical_inode(struct nomount_rule *rule)
         nm_iop = __get_nm(t_inode->i_op, struct nm_iop, fake_iop);
         if (nm_iop && nm_iop->rule == rule) {
             smp_store_release(&t_inode->i_op, nm_iop->orig_iop);
-            t_inode->i_opflags |= IOP_FASTPERM;
+            if (nm_iop->had_fastperm) t_inode->i_opflags |= IOP_FASTPERM;
+            if (!nm_iop->had_private_flag) t_inode->i_flags &= ~S_PRIVATE;
             nm_debug("Successfully cured inode %lu for %s\n", t_inode->i_ino, path_to_restore);
             kfree_rcu(nm_iop, rcu);
         }
@@ -702,7 +712,8 @@ static void nomount_restore_dir_node(struct nomount_dir_node *dir_node)
         nm_iop = __get_nm(t_inode->i_op, struct nm_iop, fake_iop);
         if (nm_iop && nm_iop->dir_node == dir_node) {
             smp_store_release(&t_inode->i_op, nm_iop->orig_iop);
-            t_inode->i_opflags |= IOP_FASTPERM;
+            if (nm_iop->had_fastperm) t_inode->i_opflags |= IOP_FASTPERM;
+            if (!nm_iop->had_private_flag) t_inode->i_flags &= ~S_PRIVATE;
             nm_debug("Successfully cured i_op for dir %lu\n", t_inode->i_ino);
             kfree_rcu(nm_iop, rcu);
         }
