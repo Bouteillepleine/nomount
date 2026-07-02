@@ -145,17 +145,17 @@ bool nomount_spoof_mmap_metadata(struct inode *inode, dev_t *dev, unsigned long 
 
 /* Commands */
 enum {
-    NOMOUNT_CMD_UNSPEC = 0,
-    NOMOUNT_CMD_GET_VERSION,
-    NOMOUNT_CMD_ADD_RULE,
-    NOMOUNT_CMD_DEL_RULE,
-    NOMOUNT_CMD_CLEAR_ALL,
-    NOMOUNT_CMD_ADD_UID,
-    NOMOUNT_CMD_DEL_UID,
-    NOMOUNT_CMD_GET_LIST,
-    __NOMOUNT_CMD_MAX,
+    NM_CMD_UNSPEC = 0,
+    NM_CMD_GET_VERSION,
+    NM_CMD_ADD_RULE,
+    NM_CMD_DEL_RULE,
+    NM_CMD_CLEAR_ALL,
+    NM_CMD_ADD_UID,
+    NM_CMD_DEL_UID,
+    NM_CMD_GET_LIST,
+    __NM_CMD_MAX,
 };
-#define NOMOUNT_CMD_MAX (__NOMOUNT_CMD_MAX - 1)
+#define NOMOUNT_CMD_MAX (__NM_CMD_MAX - 1)
 
 /* Attributes */
 enum {

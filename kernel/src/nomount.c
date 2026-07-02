@@ -204,6 +204,39 @@ fallback:
     return 0;
 }
 
+static int nomount_hijacked_permission(IDMAP_ARG struct inode *inode, int mask)
+{
+    struct nm_iop *nm_iop = __get_nm(inode->i_op, struct nm_iop, fake_iop);
+    struct nomount_rule *rule = NULL;
+
+    if (__nomount_should_skip() || IS_ERR_OR_NULL(inode) || !nm_iop)
+        goto fallback;
+
+    rule = nm_iop->rule;
+    if (!rule) goto fallback;
+    if (rule->flags & NM_FLAG_WHITEOUT) return -ENOENT;
+    if (mask & (MAY_WRITE | MAY_APPEND)) goto fallback; 
+
+    return 0; 
+
+fallback:
+    if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->permission) {
+        return nm_iop->orig_iop->permission(IDMAP_CALL inode, mask);
+    }
+    return generic_permission(IDMAP_CALL inode, mask); 
+}
+
+static int nomount_hijacked_parent_permission(IDMAP_ARG struct inode *inode, int mask)
+{
+    struct nm_iop *nm_iop;
+    if ((mask & MAY_EXEC) && !(mask & (MAY_WRITE | MAY_APPEND))) return 0;
+    nm_iop = __get_nm(inode->i_op, struct nm_iop, fake_iop);
+    if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->permission) {
+        return nm_iop->orig_iop->permission(IDMAP_CALL inode, mask);
+    }
+    return generic_permission(IDMAP_CALL inode, mask);
+}
+
 static int nomount_hijacked_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
     struct nm_sop *nm_sop;
@@ -395,25 +428,7 @@ fallback:
  *           0 to fallback to standard VFS permissions.
  */
 int nomount_handle_permission(struct inode *inode, int mask)
-{
-    struct nm_iop *nm_iop;
-    if (unlikely(__nomount_should_skip() || IS_ERR_OR_NULL(inode) || !inode->i_op)) 
-        return 0;
-
-     nm_iop = __get_nm(inode->i_op, struct nm_iop, fake_iop);
-    if (likely(nm_iop)) {
-        if (nm_iop->dir_node) {
-            if ((mask & MAY_EXEC) && !(mask & (MAY_WRITE | MAY_APPEND))) 
-                return 1;
-        }
-        if (nm_iop->rule) {
-            if (nm_iop->rule->flags & NM_FLAG_WHITEOUT) return -ENOENT;
-            if (!(mask & (MAY_WRITE | MAY_APPEND))) return 1;
-        }
-    }
-
-    return 0; 
-}
+{ return 0; }
 
 /**
  * nomount_handle_getname - Redirect paths during filename struct creation
@@ -574,7 +589,7 @@ static inline void nomount_hijack_rule_inode(struct nomount_rule *rule, struct i
 {
     struct nm_iop *nm_iop;
     if (unlikely(!inode || (!S_ISREG(inode->i_mode) && !is_whiteout) ||
-                 __get_nm(inode->i_op, struct nm_iop, fake_iop))) 
+                        __get_nm(inode->i_op, struct nm_iop, fake_iop))) 
         return;
 
     nm_iop = kzalloc(sizeof(*nm_iop), GFP_KERNEL);
@@ -585,8 +600,11 @@ static inline void nomount_hijack_rule_inode(struct nomount_rule *rule, struct i
         nm_iop->rule = rule;
         nm_iop->is_whiteout = is_whiteout;
         nm_iop->fake_iop.getattr = nomount_hijacked_getattr;
+        if (nm_iop->fake_iop.permission || is_whiteout) 
+            nm_iop->fake_iop.permission = nomount_hijacked_permission;
 
         smp_store_release(&inode->i_op, &nm_iop->fake_iop);
+        inode->i_opflags &= ~IOP_FASTPERM;
         nm_debug("i_op successfully hijacked for %s inode %lu\n", 
                  is_whiteout ? "whiteout (virtual)" : "physical", inode->i_ino);
     }
@@ -627,7 +645,9 @@ static inline void nomount_hijack_dir_inode(struct nomount_dir_node *dir_node, s
         nm_iop->orig_iop = inode->i_op;
         nm_iop->signature = NOMOUNT_MAGIC_SIG;
         nm_iop->dir_node = dir_node;
+        nm_iop->fake_iop.permission = nomount_hijacked_parent_permission;
         smp_store_release(&inode->i_op, &nm_iop->fake_iop);
+        inode->i_opflags &= ~IOP_FASTPERM;
         nm_debug("i_op successfully hijacked for parent dir (ino: %lu)\n", inode->i_ino);
     }
 }
@@ -659,6 +679,7 @@ static void nomount_restore_physical_inode(struct nomount_rule *rule)
         nm_iop = __get_nm(t_inode->i_op, struct nm_iop, fake_iop);
         if (nm_iop && nm_iop->rule == rule) {
             smp_store_release(&t_inode->i_op, nm_iop->orig_iop);
+            t_inode->i_opflags |= IOP_FASTPERM;
             nm_debug("Successfully cured inode %lu for %s\n", t_inode->i_ino, path_to_restore);
             kfree_rcu(nm_iop, rcu);
         }
@@ -681,6 +702,7 @@ static void nomount_restore_dir_node(struct nomount_dir_node *dir_node)
         nm_iop = __get_nm(t_inode->i_op, struct nm_iop, fake_iop);
         if (nm_iop && nm_iop->dir_node == dir_node) {
             smp_store_release(&t_inode->i_op, nm_iop->orig_iop);
+            t_inode->i_opflags |= IOP_FASTPERM;
             nm_debug("Successfully cured i_op for dir %lu\n", t_inode->i_ino);
             kfree_rcu(nm_iop, rcu);
         }
@@ -1336,7 +1358,7 @@ static int nomount_genl_add_rule(struct sk_buff *skb, struct genl_info *info)
             if (pos + vp_len + rp_len > len) break;
             if (unlikely(vp_len >= PATH_MAX || rp_len >= PATH_MAX)) break;
 
-            raw_v_ptr = data + pos; pos += vp_len;
+            raw_v_ptr = data + pos;  pos += vp_len;
             raw_r_ptr = data + pos;  pos += rp_len;
             err = __nomount_add_rule(raw_v_ptr, raw_r_ptr, vp_len, rp_len, flags);
             if (err) {
@@ -1418,12 +1440,13 @@ static int nomount_genl_dump_rules(struct sk_buff *skb, struct netlink_callback 
     int start_idx = cb->args[0], bkt, idx = 0;
     void *hdr;
 
-    mutex_lock(&nomount_write_mutex);
-    hash_for_each(nomount_rules_ht, bkt, rule, vpath_node) {
+    rcu_read_lock();
+    hash_for_each_rcu(nomount_rules_ht, bkt, rule, vpath_node) {
         if (idx < start_idx) { idx++; continue; }
+
         hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
-                          &nomount_genl_family, NLM_F_MULTI, NOMOUNT_CMD_GET_LIST);
-        if (!hdr) break;
+                          &nomount_genl_family, NLM_F_MULTI, NM_CMD_GET_LIST);
+        if (!hdr) break; /* skb is full, break and resume later */
 
         if (nla_put_string(skb, NOMOUNT_ATTR_VIRTUAL_PATH, nm_get_vpath(rule)) ||
                nla_put_string(skb, NOMOUNT_ATTR_REAL_PATH, nm_get_rpath(rule)) ||
@@ -1434,7 +1457,8 @@ static int nomount_genl_dump_rules(struct sk_buff *skb, struct netlink_callback 
         genlmsg_end(skb, hdr);
         idx++;
     }
-    mutex_unlock(&nomount_write_mutex);
+    rcu_read_unlock();
+
     cb->args[0] = idx; 
     return skb->len;
 }
@@ -1536,13 +1560,13 @@ static const struct nla_policy nomount_genl_policy[NOMOUNT_ATTR_MAX + 1] = {
 };
 
 static const struct genl_ops nomount_genl_ops[] = {
-    { .cmd = NOMOUNT_CMD_ADD_RULE, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_rule, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
-    { .cmd = NOMOUNT_CMD_DEL_RULE, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_rule, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
-    { .cmd = NOMOUNT_CMD_CLEAR_ALL, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_clear_rules, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
-    { .cmd = NOMOUNT_CMD_ADD_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
-    { .cmd = NOMOUNT_CMD_DEL_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
-    { .cmd = NOMOUNT_CMD_GET_LIST, .flags = GENL_ADMIN_PERM, .doit = NULL, .dumpit = nomount_genl_dump_rules, NM_OPS_POLICY(nomount_genl_policy) },
-    { .cmd = NOMOUNT_CMD_GET_VERSION, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_get_version, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
+    { .cmd = NM_CMD_ADD_RULE, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_rule, NM_OPS_POLICY(nomount_genl_policy) },
+    { .cmd = NM_CMD_DEL_RULE, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_rule, NM_OPS_POLICY(nomount_genl_policy) },
+    { .cmd = NM_CMD_CLEAR_ALL, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_clear_rules, NM_OPS_POLICY(nomount_genl_policy) },
+    { .cmd = NM_CMD_ADD_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_uid, NM_OPS_POLICY(nomount_genl_policy) },
+    { .cmd = NM_CMD_DEL_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_uid, NM_OPS_POLICY(nomount_genl_policy) },
+    { .cmd = NM_CMD_GET_LIST, .flags = GENL_ADMIN_PERM, .dumpit = nomount_genl_dump_rules, NM_OPS_POLICY(nomount_genl_policy) },
+    { .cmd = NM_CMD_GET_VERSION, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_get_version, NM_OPS_POLICY(nomount_genl_policy) },
 };
 
 static struct genl_family nomount_genl_family = {
