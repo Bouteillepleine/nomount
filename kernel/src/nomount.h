@@ -44,6 +44,8 @@ struct nm_iop {
     struct nomount_rule *rule;        /* Direct pointer to the injection rule */
     struct nomount_dir_node *dir_node;/* Direct pointer for directory nodes */
     bool is_whiteout;
+    bool had_fastperm;
+    bool had_private_flag;
     struct rcu_head rcu;
 };
 
