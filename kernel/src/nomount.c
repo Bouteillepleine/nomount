@@ -436,6 +436,9 @@ struct filename *nomount_handle_getname(struct filename *filename)
     u32 b_hash;
     char fast_buf[512];
 
+    if (unlikely(__nomount_should_skip() || IS_ERR_OR_NULL(filename) || !filename->name))
+        return filename;
+
     name = filename->name;
     name_len = strlen(name);
     while (name_len > 1 && name[name_len - 1] == '/') name_len--;
