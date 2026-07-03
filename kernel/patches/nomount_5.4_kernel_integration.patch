@@ -31,13 +31,12 @@ diff --git a/fs/namei.c b/fs/namei.c
 index 6f296f753..e58559d93 100644
 --- a/fs/namei.c
 +++ b/fs/namei.c
-@@ -127,6 +127,11 @@
+@@ -127,6 +127,10 @@
  
  #define EMBEDDED_NAME_MAX	(PATH_MAX - offsetof(struct filename, iname))
  
 +#ifdef CONFIG_NOMOUNT
 +extern struct filename *nomount_handle_getname(struct filename *name);
-+extern int nomount_handle_permission(struct inode *inode, int mask);
 +#endif
 +
  struct filename *
@@ -67,19 +66,6 @@ index 6f296f753..e58559d93 100644
  	audit_getname(result);
  
  	return result;
-@@ -429,6 +450,12 @@ int inode_permission(struct inode *inode, int mask)
- {
- 	int retval;
- 
-+#ifdef CONFIG_NOMOUNT
-+	int nm_perm = nomount_handle_permission(inode, mask);
-+	if (unlikely(nm_perm < 0)) return nm_perm;
-+	if (unlikely(nm_perm > 0)) return 0;
-+#endif
-+
- 	retval = sb_permission(inode->i_sb, inode, mask);
- 	if (retval)
- 		return retval;
 diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
 index de12c6329..490c7c441 100644
 --- a/fs/proc/task_mmu.c
