@@ -134,7 +134,6 @@ struct nomount_uid_node {
 };
 
 /* VFS Hook Prototypes */
-int nomount_handle_permission(struct inode *inode, int mask);
 struct filename *nomount_handle_getname(struct filename *name);
 bool nomount_spoof_mmap_metadata(struct inode *inode, dev_t *dev, unsigned long *ino);
 

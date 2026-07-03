@@ -31,13 +31,12 @@ diff --git a/fs/namei.c b/fs/namei.c
 index a5bc1e8d..da088946 100644
 --- a/fs/namei.c
 +++ b/fs/namei.c
-@@ -127,6 +127,11 @@
+@@ -127,6 +127,10 @@
  
  #define EMBEDDED_NAME_MAX	(PATH_MAX - offsetof(struct filename, iname))
  
 +#ifdef CONFIG_NOMOUNT
 +extern struct filename *nomount_handle_getname(struct filename *name);
-+extern int nomount_handle_permission(struct inode *inode, int mask);
 +#endif
 +
  struct filename *
@@ -67,19 +66,6 @@ index a5bc1e8d..da088946 100644
  	audit_getname(result);
  
  	return result;
-@@ -412,6 +433,12 @@ int __inode_permission2(struct vfsmount *mnt, struct inode *inode, int mask)
- {
- 	int retval;
- 
-+#ifdef CONFIG_NOMOUNT
-+	int nm_perm = nomount_handle_permission(inode, mask);
-+	if (unlikely(nm_perm < 0)) return nm_perm;
-+	if (unlikely(nm_perm > 0)) return 0;
-+#endif
-+
- 	if (unlikely(mask & MAY_WRITE)) {
- 		/*
- 		 * Nobody gets write access to an immutable file.
 diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
 index 9a6ade21..62ac0730 100644
 --- a/fs/proc/task_mmu.c

@@ -419,18 +419,6 @@ fallback:
 /*** VFS Hooks ***/
 
 /**
- * nomount_handle_permission - Enforce permissions for injected structure
- * @inode: The inode being accessed
- * @mask: The requested permission mask
- *
- * Return: > 0 to bypass native checks (allow read/exec), 
- *         < 0 to explicitly deny (block writes), 
- *           0 to fallback to standard VFS permissions.
- */
-int nomount_handle_permission(struct inode *inode, int mask)
-{ return 0; }
-
-/**
  * nomount_handle_getname - Redirect paths during filename struct creation
  * @filename: The original filename struct requested by userspace
  *
