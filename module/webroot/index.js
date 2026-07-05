@@ -456,12 +456,6 @@ async function loadModule(modId) {
             mod="$1"; shift
             for f do
                 printf "/%s\\0%s/%s\\0" "$f" "$mod" "$f"
-                case "$f" in
-                    vendor/*|product/*|system_ext/*|odm/*|oem/*)
-                        [ ! -e "$mod/system/$f" ] && [ ! -L "$mod/system/$f" ] && printf "/system/%s\\0%s/%s\\0" "$f" "$mod" "$f" ;;
-                    system/vendor/*|system/product/*|system/system_ext/*|system/odm/*|system/oem/*)
-                        [ ! -e "$mod/\${f#system/}" ] && [ ! -L "$mod/\${f#system/}" ] && printf "/%s\\0%s/%s\\0" "\${f#system/}" "$mod" "$f" ;;
-                esac
             done
         ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r ${NM_BIN} a
     `;
@@ -474,21 +468,14 @@ async function unloadModule(modId) {
     const script = `
         cd "${modPath}" || exit 0
         find -L system vendor product system_ext odm oem \\( -type f -o -type l -o -type c \\) -exec sh -c '
-            mod="$1"; shift
             for f do
                 if [ "\${f##*/}" = ".replace" ]; then
                     printf "/%s\\0" "\${f%/.replace}"
-                    continue
+                else
+                    printf "/%s\\0" "$f"
                 fi
-                printf "/%s\\0" "$f"
-                case "$f" in
-                    vendor/*|product/*|system_ext/*|odm/*|oem/*)
-                        [ ! -e "$mod/system/$f" ] && [ ! -L "$mod/system/$f" ] && printf "/system/%s\\0" "$f" ;;
-                    system/vendor/*|system/product/*|system/system_ext/*|system/odm/*|system/oem/*)
-                        [ ! -e "$mod/\${f#system/}" ] && [ ! -L "$mod/\${f#system/}" ] && printf "/%s\\0" "\${f#system/}" ;;
-                esac
             done
-        ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r ${NM_BIN} d
+        ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} d
     `;
     try { await exec(script); } catch (e) { throw e; }
 }
