@@ -2,6 +2,7 @@
 #define _LINUX_NOMOUNT_H
 
 #include <linux/types.h>
+#include <linux/idr.h>
 #include <linux/list.h>
 #include <linux/hashtable.h>
 #include <linux/atomic.h>
@@ -88,6 +89,7 @@ struct nomount_child_node {
     struct rcu_head rcu;
     u32 name_hash;
     u32 fake_ino;
+    int id;
     u8 d_type;
     u8 flags;
     u16 name_len;
@@ -101,7 +103,8 @@ struct nomount_child_node {
 
 struct nomount_dir_node {
     struct list_head list;
-    struct list_head children_list;
+    struct idr children_idr;
+    u64 bloom_mask;
     struct inode *dir_inode;
 };
 
@@ -127,6 +130,34 @@ struct nomount_uid_node {
     struct list_head list;
     uid_t uid;
 };
+
+/* =====================================================================
+ * NoMount VFS Offset Protocol
+ * =====================================================================
+ * 64-bit layout: [ 16-bit 'nm' ][ 16-bit 0 ][ 32-bit ID ] 
+ * 32-bit layout: [ 16-bit 'nm' ][ 16-bit ID ]
+ */
+#define NM_SIG_16 0x6E6DULL /* "nm" in hex */
+static inline bool nm_is_virtual_pos(loff_t pos) {
+#ifdef CONFIG_COMPAT
+    if (in_compat_syscall()) return (pos & 0xFFFF0000ULL) == (NM_SIG_16 << 16);
+#endif
+    return (pos & 0xFFFFFFFF00000000ULL) == (NM_SIG_16 << 48);
+}
+
+static inline loff_t nm_pack_pos(int id) {
+#ifdef CONFIG_COMPAT
+    if (in_compat_syscall()) return (NM_SIG_16 << 16) | (id & 0xFFFF);
+#endif
+    return (NM_SIG_16 << 48) | (id & 0xFFFFFFFF);
+}
+
+static inline int nm_unpack_pos(loff_t pos) {
+#ifdef CONFIG_COMPAT
+    if (in_compat_syscall()) return (int)(pos & 0xFFFF);
+#endif
+    return (int)(pos & 0xFFFFFFFF);
+}
 
 /* ========================================================================= */
 /* NETLINK GENERIC PROTOCOL DEFINITIONS */
