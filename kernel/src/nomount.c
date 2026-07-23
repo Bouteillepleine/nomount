@@ -379,13 +379,7 @@ static const struct inode_operations nm_file_iops = {
     .getattr = nm_file_getattr,
     .setattr = nm_setattr,
     .listxattr = nm_listxattr,
-};
-
-static const struct inode_operations nm_symlink_iops = {
-    .getattr = simple_getattr,
-    .setattr = nm_setattr,
     .get_link = nm_get_link,
-    .listxattr = nm_listxattr,
 };
 
 static int nm_dir_iterate_dir(struct file *file, struct dir_context *ctx)
@@ -479,7 +473,7 @@ struct nm_xattr_proxy {
 static int nm_xattr_get(const struct xattr_handler *handler, struct dentry *dentry, struct inode *inode, const char *name, void *buffer, size_t size FLAGS_ARG)
 {
     struct nm_xattr_proxy *proxy = container_of(handler, struct nm_xattr_proxy, fake);
-    if (inode->i_op == &nm_file_iops || inode->i_op == &nm_symlink_iops || inode->i_op == &nm_dir_iops) {
+    if (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops) {
         struct nm_inode_info *info = inode->i_private;
         if (unlikely(!info || !info->r_path.dentry)) return -ENODATA;
         return vfs_getxattr(IDMAP_PATH(info->r_path) info->r_path.dentry, name, buffer, size);
@@ -490,7 +484,7 @@ static int nm_xattr_get(const struct xattr_handler *handler, struct dentry *dent
 static int nm_xattr_set(const struct xattr_handler *handler, IDMAP_ARG struct dentry *dentry, struct inode *inode, const char *name, const void *buffer, size_t size, int flags)
 {
     struct nm_xattr_proxy *proxy = container_of(handler, struct nm_xattr_proxy, fake);
-    if (inode->i_op == &nm_file_iops || inode->i_op == &nm_symlink_iops || inode->i_op == &nm_dir_iops) {
+    if (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops) {
         struct nm_inode_info *info = inode->i_private;
         if (unlikely(!info || !info->r_path.dentry)) return -ENODATA;
         return vfs_setxattr(IDMAP_CALL info->r_path.dentry, name, buffer, size, flags);
@@ -551,16 +545,13 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
         if (S_ISDIR(real_inode->i_mode)) {
             inode->i_op = &nm_dir_iops;
             inode->i_fop = &nm_dir_fops;
-        } else if (S_ISLNK(real_inode->i_mode) || (real_inode->i_op && real_inode->i_op->get_link)) {
-            inode->i_op = &nm_symlink_iops;
-            inode->i_fop = &nm_fops;
-        } else { 
+        } else {
             inode->i_op = &nm_file_iops;
-    #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
-            if (real_inode->i_fop && real_inode->i_fop->mmap_prepare)
+        #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+            if (!S_ISLNK(real_inode->i_mode) && real_inode->i_fop && real_inode->i_fop->mmap_prepare)
                 inode->i_fop = &nm_fops_mmap_prepare;
             else
-    #endif
+        #endif
                 inode->i_fop = &nm_fops;
         }
         inode->i_mapping = real_inode->i_mapping;
@@ -568,6 +559,7 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
 
     inode->i_flags |= S_PRIVATE | S_NOATIME | S_NOCMTIME | S_NOSEC;
     inode->i_opflags |= IOP_XATTR;
+    if (!S_ISLNK(inode->i_mode)) inode->i_opflags |= IOP_NOFOLLOW;
     nm_init_private_list(inode);
 
     return inode;
@@ -643,7 +635,7 @@ do_real_iterate:
 static void nomount_hijacked_destroy_inode(struct inode *inode)
 {
     struct nm_sop *nm_sop;
-    if (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops || inode->i_op == &nm_symlink_iops) {
+    if (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops) {
         if (inode->i_private) {
             struct nm_inode_info *info = inode->i_private;
             if (info->r_path.dentry) {
@@ -662,7 +654,7 @@ static void nomount_hijacked_destroy_inode(struct inode *inode)
 static void nomount_hijacked_evict_inode(struct inode *inode)
 {
     struct nm_sop *nm_sop;
-    if (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops || inode->i_op == &nm_symlink_iops) {
+    if (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops) {
         truncate_inode_pages_final(&inode->i_data);
         clear_inode(inode);
         return;
