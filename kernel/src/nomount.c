@@ -855,7 +855,7 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
     dir_node->bloom_mask |= (1ULL << (child->name_hash & 63));
 }
 
-static void __nomount_delete_child_locked(struct nomount_dir_node *dir_node, unsigned long fake_ino, struct list_head *d_victims)
+static void __nomount_delete_child_locked(struct nomount_dir_node *dir_node, unsigned long fake_ino)
 {
     struct nomount_child_node *child;
     int id;
@@ -868,9 +868,11 @@ static void __nomount_delete_child_locked(struct nomount_dir_node *dir_node, uns
             break;
         }
     }
+    
     if (idr_is_empty(&dir_node->children_idr)) {
-        list_del(&dir_node->list);
-        list_add(&dir_node->list, d_victims);
+        if (dir_node->dir_inode) nomount_restore_dir_node(dir_node);
+        idr_destroy(&dir_node->children_idr);
+        kmem_cache_free(nm_dir_cachep, dir_node);
     } else {
         dir_node->bloom_mask = 0;
         idr_for_each_entry(&dir_node->children_idr, child, id) {
@@ -1090,7 +1092,7 @@ static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len,
     return 0;
 }
 
-static void __nomount_del_rule(const char *v_path, size_t v_len, struct hlist_head *r_victims, struct list_head *d_victims)
+static void __nomount_del_rule(const char *v_path, size_t v_len, struct hlist_head *r_victims)
 {
     struct nomount_rule *rule;
     u32 hash = full_name_hash(NULL, v_path, v_len);
@@ -1101,54 +1103,40 @@ static void __nomount_del_rule(const char *v_path, size_t v_len, struct hlist_he
             nomount_invalidate_dcache(v_path);
             hash_del_rcu(&rule->vpath_node);
             hlist_add_head(&rule->vpath_node, r_victims);
-            if (rule->parent_dir)
-                __nomount_delete_child_locked(rule->parent_dir, hash, d_victims);
             break;
         }
     }
 }
 
-static void __nomount_clear_all(void)
+static void __nomount_clear_all(bool is_exit)
 {
     struct nomount_rule *rule;
-    struct nomount_dir_node *dir_node, *tmp_dir;
-    struct nomount_child_node *child;
-    struct hlist_node *hlist_tmp;
-    HLIST_HEAD(rule_victims);
-    LIST_HEAD(dir_victims);
-    LIST_HEAD(uid_victims);
-    int bkt, id;
-
-    hash_for_each_safe(nomount_rules_ht, bkt, hlist_tmp, rule, vpath_node) {
-        nomount_invalidate_dcache(nm_get_vpath(rule));
-        hash_del_rcu(&rule->vpath_node);
-        hlist_add_head(&rule->vpath_node, &rule_victims);
-    }
-
-    list_for_each_entry_safe(dir_node, tmp_dir, &nomount_all_dirs_list, list) {
-        list_del(&dir_node->list);
-        idr_for_each_entry(&dir_node->children_idr, child, id) {
-            list_del_rcu(&child->list_node);
-            kfree_rcu(child, rcu);
-        }
-        list_add_tail(&dir_node->list, &dir_victims);
-    }
+    struct hlist_node *tmp;
+    int bkt;
+    HLIST_HEAD(r_victims);
 
     static_branch_disable(&nomount_active_uids);
     idr_destroy(&nomount_uid_idr);
-    INIT_LIST_HEAD(&nomount_all_dirs_list);
+
+    hash_for_each_safe(nomount_rules_ht, bkt, tmp, rule, vpath_node) {
+        nomount_invalidate_dcache(nm_get_vpath(rule));
+        hash_del_rcu(&rule->vpath_node);
+        hlist_add_head(&rule->vpath_node, &r_victims);
+    }
+
     synchronize_rcu();
 
-    hlist_for_each_entry_safe(rule, hlist_tmp, &rule_victims, vpath_node) {
+    hlist_for_each_entry_safe(rule, tmp, &r_victims, vpath_node) {
+        if (rule->parent_dir) __nomount_delete_child_locked(rule->parent_dir, rule->v_hash);
         if (rule->r_path.dentry) path_put(&rule->r_path);
+        if (rule->this_dir) {
+            idr_destroy(&rule->this_dir->children_idr);
+            kmem_cache_free(nm_dir_cachep, rule->this_dir);
+        }
         kfree(rule);
     }
-    list_for_each_entry_safe(dir_node, tmp_dir, &dir_victims, list) {
-        nomount_restore_dir_node(dir_node);
-        kmem_cache_free(nm_dir_cachep, dir_node);
-    }
 
-    nomount_restore_superblocks();
+    if (is_exit) nomount_restore_superblocks();
 }
 
 /*** Generic Netlink API ***/
@@ -1194,10 +1182,8 @@ static int nomount_genl_add_rule(struct sk_buff *skb, struct genl_info *info)
 static int nomount_genl_del_rule(struct sk_buff *skb, struct genl_info *info)
 {
     struct nomount_rule *rule;
-    struct nomount_dir_node *dir_node, *tmp_dir;
-    struct hlist_node *tmp_r;
+    struct hlist_node *tmp;
     HLIST_HEAD(r_victims);
-    LIST_HEAD(d_victims);
 
     if (info->attrs[NOMOUNT_ATTR_PAYLOAD]) {
         struct nlattr *attr = info->attrs[NOMOUNT_ATTR_PAYLOAD];
@@ -1209,14 +1195,14 @@ static int nomount_genl_del_rule(struct sk_buff *skb, struct genl_info *info)
         while (pos + 2 <= len) {
             u16 vp_len = get_unaligned((const u16 *)(data + pos));
             pos += 2; if (pos + vp_len > len) break;
-            __nomount_del_rule(data + pos, vp_len, &r_victims, &d_victims);
+            __nomount_del_rule(data + pos, vp_len, &r_victims);
             pos += vp_len;
         }
         mutex_unlock(&nomount_write_mutex);
     } else if (info->attrs[NOMOUNT_ATTR_VIRTUAL_PATH]) {
         char *v_path = nla_data(info->attrs[NOMOUNT_ATTR_VIRTUAL_PATH]);
         mutex_lock(&nomount_write_mutex);
-        __nomount_del_rule(v_path, strlen(v_path), &r_victims, &d_victims);
+        __nomount_del_rule(v_path, strlen(v_path), &r_victims);
         mutex_unlock(&nomount_write_mutex);
     } else {
         return -EINVAL;
@@ -1225,14 +1211,15 @@ static int nomount_genl_del_rule(struct sk_buff *skb, struct genl_info *info)
     if (hlist_empty(&r_victims)) return -ENOENT;
     synchronize_rcu();
 
-    hlist_for_each_entry_safe(rule, tmp_r, &r_victims, vpath_node) {
+    hlist_for_each_entry_safe(rule, tmp, &r_victims, vpath_node) {
         nm_info("Deleted rule for: %s\n", nm_get_vpath(rule));
+        if (rule->parent_dir) __nomount_delete_child_locked(rule->parent_dir, rule->v_hash);
         if (rule->r_path.dentry) path_put(&rule->r_path);
+        if (rule->this_dir) {
+            idr_destroy(&rule->this_dir->children_idr);
+            kmem_cache_free(nm_dir_cachep, rule->this_dir);
+        }
         kfree(rule);
-    }
-    list_for_each_entry_safe(dir_node, tmp_dir, &d_victims, list) {
-        nomount_restore_dir_node(dir_node);
-        kmem_cache_free(nm_dir_cachep, dir_node);
     }
 
     return 0;
@@ -1241,7 +1228,7 @@ static int nomount_genl_del_rule(struct sk_buff *skb, struct genl_info *info)
 static int nomount_genl_clear_rules(struct sk_buff *skb, struct genl_info *info)
 {
     mutex_lock(&nomount_write_mutex);
-    __nomount_clear_all();
+    __nomount_clear_all(false);
     mutex_unlock(&nomount_write_mutex);
     nm_info("Cleared all active rules and UIDs\n");
     return 0;
@@ -1428,7 +1415,7 @@ static void __exit nomount_exit(void)
     genl_unregister_family(&nomount_genl_family);
 
     mutex_lock(&nomount_write_mutex);
-    __nomount_clear_all();
+    __nomount_clear_all(true);
     mutex_unlock(&nomount_write_mutex);
 
     kmem_cache_destroy(nm_dir_cachep);

@@ -33,7 +33,6 @@
 static DEFINE_HASHTABLE(nomount_rules_ht, NOMOUNT_HASH_BITS);
 static LIST_HEAD(nomount_sb_list);
 static DEFINE_IDR(nomount_uid_idr);
-static LIST_HEAD(nomount_all_dirs_list);
 static DEFINE_MUTEX(nomount_write_mutex);
 
 /* * Helpers to dynamically calculate the memory address of the strings */
@@ -85,7 +84,6 @@ struct nm_inode_info {
         d_backing_inode(((struct nm_inode_info *)(v_inode)->i_private)->r_path.dentry) : NULL)
 
 struct nomount_child_node {
-    struct list_head list_node;
     struct rcu_head rcu;
     u32 name_hash;
     u32 fake_ino;
@@ -102,7 +100,6 @@ struct nomount_child_node {
 };
 
 struct nomount_dir_node {
-    struct list_head list;
     struct idr children_idr;
     u64 bloom_mask;
     struct inode *dir_inode;
