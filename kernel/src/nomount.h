@@ -102,7 +102,11 @@ struct nomount_child_node {
 struct nomount_dir_node {
     struct idr children_idr;
     u64 bloom_mask;
-    struct inode *dir_inode;
+    union {
+        struct inode *dir_inode;
+        struct nomount_rule *owner_rule;
+        unsigned long _tag_ptr;
+    };
 };
 
 struct nomount_rule {
