@@ -32,7 +32,7 @@
 
 static DEFINE_HASHTABLE(nomount_rules_ht, NOMOUNT_HASH_BITS);
 static LIST_HEAD(nomount_sb_list);
-static LIST_HEAD(nomount_uid_list);
+static DEFINE_IDR(nomount_uid_idr);
 static LIST_HEAD(nomount_all_dirs_list);
 static DEFINE_MUTEX(nomount_write_mutex);
 
@@ -124,11 +124,6 @@ struct nomount_rule {
      * Memory Layout: [ struct ] "virtual_path\0real_path\0"
      */
     char paths[]; 
-};
-
-struct nomount_uid_node {
-    struct list_head list;
-    uid_t uid;
 };
 
 /* =====================================================================
