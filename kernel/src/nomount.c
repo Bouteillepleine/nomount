@@ -77,7 +77,7 @@ static NM_ACTOR_RET nomount_actor_proxy(struct dir_context *ctx, const char *nam
     int id;
 
     proxy->emitted++;
-    if (!proxy->dir_node) return NM_ACTOR_CONTINUE;
+    if (!proxy->dir_node) goto do_real_actor;
     hash = full_name_hash(NULL, name, namelen);
     if (!(proxy->dir_node->bloom_mask & (1ULL << (hash & 63))))
         goto do_real_actor;
@@ -651,6 +651,21 @@ static void nomount_hijacked_destroy_inode(struct inode *inode)
     }
 }
 
+static int nomount_hijacked_drop_inode(struct inode *inode)
+{
+    struct nm_sop *nm_sop;
+    if (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops) {
+        return !inode->i_nlink || inode_unhashed(inode);
+    }
+
+    nm_sop = __get_nm(smp_load_acquire(&inode->i_sb->s_op), struct nm_sop, fake_sop);
+    if (nm_sop && nm_sop->orig_sop && nm_sop->orig_sop->drop_inode) {
+        return nm_sop->orig_sop->drop_inode(inode);
+    }
+    
+    return !inode->i_nlink || inode_unhashed(inode);
+}
+
 static void nomount_hijacked_evict_inode(struct inode *inode)
 {
     struct nm_sop *nm_sop;
@@ -684,6 +699,7 @@ static inline void nomount_hijack_superblock(struct super_block *sb)
     nm_sop->signature = NOMOUNT_MAGIC_SIG;
     nm_sop->sb = sb;
     nm_sop->fake_sop.destroy_inode = nomount_hijacked_destroy_inode;
+    nm_sop->fake_sop.drop_inode = nomount_hijacked_drop_inode;
     nm_sop->fake_sop.evict_inode = nomount_hijacked_evict_inode;
 
     if (sb->s_xattr && !nm_sop->orig_xattr) {
@@ -888,9 +904,11 @@ static void __nomount_delete_child_locked(struct nomount_dir_node *dir_node, uns
     
     if (idr_is_empty(&dir_node->children_idr)) {
         struct inode *dir_inode = dir_node->_tag_ptr & 1UL ? NULL : dir_node->dir_inode;
-        if (dir_inode) nomount_restore_dir_node(dir_node);
-        idr_destroy(&dir_node->children_idr);
-        kmem_cache_free(nm_dir_cachep, dir_node);
+        if (dir_inode) {
+            nomount_restore_dir_node(dir_node);
+            idr_destroy(&dir_node->children_idr);
+            kmem_cache_free(nm_dir_cachep, dir_node);
+        }
     } else {
         dir_node->bloom_mask = 0;
         idr_for_each_entry(&dir_node->children_idr, child, id) {
@@ -1164,13 +1182,13 @@ static void __nomount_clear_all(bool is_exit)
     hash_for_each_safe(nomount_rules_ht, bkt, tmp, rule, vpath_node) {
         nomount_invalidate_dcache(nm_get_vpath(rule));
         hash_del_rcu(&rule->vpath_node);
+        if (rule->parent_dir) __nomount_delete_child_locked(rule->parent_dir, rule->v_hash);
         hlist_add_head(&rule->vpath_node, &r_victims);
     }
 
     synchronize_rcu();
 
     hlist_for_each_entry_safe(rule, tmp, &r_victims, vpath_node) {
-        if (rule->parent_dir) __nomount_delete_child_locked(rule->parent_dir, rule->v_hash);
         if (rule->r_path.dentry) path_put(&rule->r_path);
         if (rule->this_dir) {
             idr_destroy(&rule->this_dir->children_idr);
