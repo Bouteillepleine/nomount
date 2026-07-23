@@ -7,27 +7,20 @@
 #include <linux/module.h>
 #include "nomount.h"
 
-static struct kmem_cache *nm_dir_cachep __read_mostly, *nm_uid_cachep __read_mostly, *nm_inode_cachep __read_mostly;
+static struct kmem_cache *nm_dir_cachep __read_mostly, *nm_inode_cachep __read_mostly;
 static const struct cred *nm_root_cred;
-atomic_t nm_active_uids = ATOMIC_INIT(0);
-DEFINE_STATIC_KEY_FALSE(nomount_active_uids);
+static DEFINE_STATIC_KEY_FALSE(nomount_active_uids);
 
 /*** Helpers ***/
 
 static __always_inline bool nomount_is_uid_blocked(uid_t uid) 
 {
-    struct nomount_uid_node *entry;
+    bool is_blocked;
     if (!static_branch_unlikely(&nomount_active_uids)) return false;
-
     rcu_read_lock();
-    list_for_each_entry_rcu(entry, &nomount_uid_list, list) {
-        if (entry->uid == uid) {
-            rcu_read_unlock();
-            return true;
-        }
-    }
+    is_blocked = (idr_find(&nomount_uid_idr, uid) != NULL);
     rcu_read_unlock();
-    return false;
+    return is_blocked;
 }
 
 #define __get_nm(ptr, type, member) ({ \
@@ -1120,7 +1113,6 @@ static void __nomount_clear_all(void)
     struct nomount_rule *rule;
     struct nomount_dir_node *dir_node, *tmp_dir;
     struct nomount_child_node *child;
-    struct nomount_uid_node *uid_node, *tmp_uid;
     struct hlist_node *hlist_tmp;
     HLIST_HEAD(rule_victims);
     LIST_HEAD(dir_victims);
@@ -1133,11 +1125,6 @@ static void __nomount_clear_all(void)
         hlist_add_head(&rule->vpath_node, &rule_victims);
     }
 
-    list_for_each_entry_safe(uid_node, tmp_uid, &nomount_uid_list, list) {
-        list_del_rcu(&uid_node->list);
-        list_add_tail(&uid_node->list, &uid_victims);
-    }
-
     list_for_each_entry_safe(dir_node, tmp_dir, &nomount_all_dirs_list, list) {
         list_del(&dir_node->list);
         idr_for_each_entry(&dir_node->children_idr, child, id) {
@@ -1147,8 +1134,8 @@ static void __nomount_clear_all(void)
         list_add_tail(&dir_node->list, &dir_victims);
     }
 
-    atomic_set(&nm_active_uids, 0);
     static_branch_disable(&nomount_active_uids);
+    idr_destroy(&nomount_uid_idr);
     INIT_LIST_HEAD(&nomount_all_dirs_list);
     synchronize_rcu();
 
@@ -1159,9 +1146,6 @@ static void __nomount_clear_all(void)
     list_for_each_entry_safe(dir_node, tmp_dir, &dir_victims, list) {
         nomount_restore_dir_node(dir_node);
         kmem_cache_free(nm_dir_cachep, dir_node);
-    }
-    list_for_each_entry_safe(uid_node, tmp_uid, &uid_victims, list) {
-        kmem_cache_free(nm_uid_cachep, uid_node);
     }
 
     nomount_restore_superblocks();
@@ -1295,7 +1279,7 @@ static int nomount_genl_dump_rules(struct sk_buff *skb, struct netlink_callback 
 static int nomount_genl_add_uid(struct sk_buff *skb, struct genl_info *info)
 {
     unsigned int uid;
-    struct nomount_uid_node *entry;
+    int ret;
 
     if (!info->attrs[NOMOUNT_ATTR_UID])
         return -EINVAL;
@@ -1305,25 +1289,27 @@ static int nomount_genl_add_uid(struct sk_buff *skb, struct genl_info *info)
     if (nomount_is_uid_blocked(uid)) 
         return -EEXIST;
 
-    entry = kmem_cache_alloc(nm_uid_cachep, GFP_KERNEL);
-    if (!entry) return -ENOMEM;
-    entry->uid = uid;
-
     mutex_lock(&nomount_write_mutex);
-    list_add_tail_rcu(&entry->list, &nomount_uid_list);
-    atomic_inc(&nm_active_uids);
-    if (atomic_read(&nm_active_uids) == 1) static_branch_enable(&nomount_active_uids);
+    idr_preload(GFP_KERNEL);
+    ret = idr_alloc(&nomount_uid_idr, (void *)1, uid, uid + 1, GFP_NOWAIT);
+    idr_preload_end();
+
+    if (ret >= 0) {
+        static_branch_enable(&nomount_active_uids);
+        nm_info("Successfully added blocked UID: %u\n", uid);
+        ret = 0;
+    } else {
+        ret = -ENOMEM;
+    }
     mutex_unlock(&nomount_write_mutex);
 
-    nm_info("Successfully added blocked UID: %u\n", uid);
-    return 0;
+    return ret;
 }
 
 static int nomount_genl_del_uid(struct sk_buff *skb, struct genl_info *info)
 {
-    struct nomount_uid_node *entry, *tmp;
     unsigned int uid;
-    bool found = false;
+    int ret = -ENOENT;
 
     if (!info->attrs[NOMOUNT_ATTR_UID])
         return -EINVAL;
@@ -1331,24 +1317,16 @@ static int nomount_genl_del_uid(struct sk_buff *skb, struct genl_info *info)
     uid = nla_get_u32(info->attrs[NOMOUNT_ATTR_UID]);
 
     mutex_lock(&nomount_write_mutex);
-    list_for_each_entry_safe(entry, tmp, &nomount_uid_list, list) {
-        if (entry->uid == uid) {
-            list_del_rcu(&entry->list);
-            found = true;
-            break; 
-        }
+    if (idr_remove(&nomount_uid_idr, uid)) {
+        if (idr_is_empty(&nomount_uid_idr)) 
+            static_branch_disable(&nomount_active_uids);
+
+        nm_info("Successfully removed blocked UID: %u\n", uid);
+        ret = 0;
     }
-    atomic_dec(&nm_active_uids);
-    if (atomic_read(&nm_active_uids) == 0) static_branch_disable(&nomount_active_uids);
     mutex_unlock(&nomount_write_mutex);
 
-    if (found && entry) {
-        synchronize_rcu();
-        kmem_cache_free(nm_uid_cachep, entry);
-    }
-
-    nm_info("Successfully remove blocked UID: %u\n", uid);
-    return found ? 0 : -ENOENT;
+    return ret;
 }
 
 static int nomount_genl_get_version(struct sk_buff *skb, struct genl_info *info)
@@ -1422,13 +1400,11 @@ static int __init nomount_init(void)
 
     hash_init(nomount_rules_ht);
     nm_dir_cachep = kmem_cache_create("nm_dirs", sizeof(struct nomount_dir_node), 0, SLAB_HWCACHE_ALIGN, NULL);
-    nm_uid_cachep = kmem_cache_create("nm_uids", sizeof(struct nomount_uid_node), 0, SLAB_HWCACHE_ALIGN, NULL);
     nm_inode_cachep = kmem_cache_create("nm_inodes", sizeof(struct nm_inode_info), 0, SLAB_HWCACHE_ALIGN, NULL);
 
-    if (!nm_dir_cachep || !nm_uid_cachep || !nm_inode_cachep) {
+    if (!nm_dir_cachep || !nm_inode_cachep) {
         nm_err("Failed to allocate memory slab caches\n");
         if (nm_dir_cachep) kmem_cache_destroy(nm_dir_cachep);
-        if (nm_uid_cachep) kmem_cache_destroy(nm_uid_cachep);
         if (nm_inode_cachep) kmem_cache_destroy(nm_inode_cachep);
         put_cred(nm_root_cred);
         return -ENOMEM;
@@ -1438,7 +1414,6 @@ static int __init nomount_init(void)
     if (ret) {
         nm_err("Failed to register Generic Netlink family (err: %d)\n", ret);
         kmem_cache_destroy(nm_dir_cachep);
-        kmem_cache_destroy(nm_uid_cachep);
         kmem_cache_destroy(nm_inode_cachep);
         put_cred(nm_root_cred);
         return ret;
@@ -1457,7 +1432,6 @@ static void __exit nomount_exit(void)
     mutex_unlock(&nomount_write_mutex);
 
     kmem_cache_destroy(nm_dir_cachep);
-    kmem_cache_destroy(nm_uid_cachep);
     kmem_cache_destroy(nm_inode_cachep);
     put_cred(nm_root_cred);
 
