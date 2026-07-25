@@ -101,10 +101,27 @@ static noinline void *memcpy(void *dst, const void *src, unsigned long n) {
 }
 #endif
 
+static noinline int strcmp(const char *s1, const char *s2) {
+    while (*s1 && (*s1 == *s2)) { s1++; s2++; }
+    return *(unsigned char *)s1 - *(unsigned char *)s2;
+}
+
 static noinline void print_str(const char *s) {
     long len = 0;
     while (s[len]) len++;
     sys3(SYS_WRITE, 1, (long)s, len);
+}
+
+static noinline void print_uint(unsigned int n) {
+    char buf[12];
+    int i = 11;
+    buf[i] = '\0';
+
+    do {
+        buf[--i] = (n % 10) + '0';
+        n /= 10;
+    } while (n > 0);    
+    print_str(&buf[i]);
 }
 
 /* path resolution */

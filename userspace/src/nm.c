@@ -27,10 +27,22 @@ void c_main(long *sp) {
     if (nm_family < 0) { exit_code = 3; goto do_exit; }
 
     char cmd = argv[1][0];
+    unsigned int target_uid = 0;
+    const char *p_args[64];
+    int p_count = 0;
+
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--uid") == 0 && i + 1 < argc) {
+            const char *s = argv[++i];
+            while (*s) target_uid = (target_uid << 3) + (target_uid << 1) + (*s++ - '0');
+        } else if (p_count < 64) {
+            p_args[p_count++] = argv[i];
+        }
+    }
 
     if (cmd == 'a' || cmd == 'd' || cmd == 'w') {
         int step = 1 + (cmd == 'a');
-        if (argc < 2 + step) { exit_code = 0; goto do_exit; }
+        if (p_count < step) { exit_code = 0; goto do_exit; }
 
         const char *cwd = (sys3(SYS_GETCWD, (long)mem.cwd_buf, PATH_MAX, 0) > 0) ? mem.cwd_buf : "/";
         char *cursor = mem.payload;
@@ -38,34 +50,37 @@ void c_main(long *sp) {
         int target_cmd = 2 + (cmd == 'd');
         exit_code = 0;
 
-        for (int i = 2; i + step - 1 < argc; i += step) {
-            char *v_end = resolve_path(mem.v_resolved, cwd, argv[i]);
+        for (int i = 0; i + step - 1 < p_count; i += step) {
+            char *v_end = resolve_path(mem.v_resolved, cwd, p_args[i]);
             int v_len = v_end - mem.v_resolved;
             if (!v_len) { exit_code = 3; continue; }
 
             int r_len = 0;
             if (cmd == 'a') {
-                char *r_end = resolve_path(mem.r_resolved, cwd, argv[i+1]);
+                char *r_end = resolve_path(mem.r_resolved, cwd, p_args[i+1]);
                 r_len = r_end - mem.r_resolved;
                 if (!r_len) { exit_code = 3; continue; }
             }
 
-            if ((cursor - mem.payload) + 8 + v_len + r_len > MAX_PAYLOAD) {
+            int header_size = (target_cmd == 2) ? 12 : 6;
+            if ((cursor - mem.payload) + header_size + v_len + r_len > MAX_PAYLOAD) {
                 exit_code |= (do_nm_cmd(fd, nm_family, target_cmd, 6, mem.payload, cursor - mem.payload, 5, &mem) < 0);
                 cursor = mem.payload;
             }
 
-            if (target_cmd == 2) {
+            if (target_cmd == 2) { /* ADD / WHITEOUT */
                 *(unsigned int*)cursor = (cmd == 'w') ? 4 : 0; 
+                *(unsigned int*)(cursor + 4) = target_uid;
+                *(unsigned short*)(cursor + 8) = v_len;
+                *(unsigned short*)(cursor + 10) = r_len;
+                memcpy(cursor + 12, mem.v_resolved, v_len);
+                if (r_len > 0) memcpy(cursor + 12 + v_len, mem.r_resolved, r_len);
+                cursor += 12 + v_len + r_len;
+            } else { /* DEL */
+                *(unsigned int*)cursor = target_uid;
                 *(unsigned short*)(cursor + 4) = v_len;
-                *(unsigned short*)(cursor + 6) = r_len;
-                memcpy(cursor + 8, mem.v_resolved, v_len);
-                if (r_len > 0) memcpy(cursor + 8 + v_len, mem.r_resolved, r_len);
-                cursor += 8 + v_len + r_len;
-            } else {
-                *(unsigned short*)cursor = v_len;
-                memcpy(cursor + 2, mem.v_resolved, v_len);
-                cursor += 2 + v_len;
+                memcpy(cursor + 6, mem.v_resolved, v_len);
+                cursor += 6 + v_len;
             }
         }
 
@@ -75,8 +90,8 @@ void c_main(long *sp) {
         goto do_exit;
 
     } else if (cmd == 'b' || cmd == 'u') {
-        if (argc < 3) goto do_exit;
-        unsigned int uid = 0; const char *s = argv[2];
+        if (p_count < 1) goto do_exit;
+        unsigned int uid = 0; const char *s = p_args[0];
         while (*s) uid = (uid << 3) + (uid << 1) + (*s++ - '0');
         exit_code = (do_nm_cmd(fd, nm_family, 6 - (cmd == 'b'), 4, &uid, 4, 5, &mem) < 0);
         goto do_exit;
@@ -100,7 +115,7 @@ void c_main(long *sp) {
 
     } else if (cmd == 'l') {
         unsigned int len = do_nm_cmd(fd, nm_family, 7, 0, (void *)0, 0, 0x301, &mem);
-        int is_json = (argc > 2 && argv[2][0] == 'j');
+        int is_json = (p_count > 0 && p_args[0][0] == 'j');
         int offset = 2;
         if (is_json) print_str("[\n");
 
@@ -111,6 +126,7 @@ void c_main(long *sp) {
                 char *v = get_attr(msg, 1); 
                 char *r = get_attr(msg, 2); 
                 unsigned int *flags = get_attr(msg, 3);
+                unsigned int *uid = get_attr(msg, 4);
 
                 if (v && r) {
                     int is_whiteout = (flags && (*flags & 4));
@@ -118,17 +134,18 @@ void c_main(long *sp) {
                         print_str((const char *)",\n  {\n    \"virtual\": \"" + offset); offset = 0;
                         print_str(v);
                         if (is_whiteout) {
-                            print_str("\",\n    \"whiteout\": true\n  }");
+                            print_str("\",\n    \"whiteout\": true");
                         } else {
-                            print_str("\",\n    \"real\": \""); print_str(r); print_str("\"\n  }");
+                            print_str("\",\n    \"real\": \""); print_str(r); print_str("\"");
                         }
+                        if (uid && *uid != 0) { print_str(",\n    \"uid\": "); print_uint(*uid); }
+                        print_str("\n  }");
                     } else {
                         print_str(v);
-                        if (is_whiteout) {
-                            print_str(" (whiteout)\n");
-                        } else {
-                            print_str(" -> "); print_str(r); print_str("\n");
-                        }
+                        if (is_whiteout) print_str(" (whiteout)");
+                        else { print_str(" -> "); print_str(r); }
+                        if (uid && *uid != 0) { print_str(" [UID: "); print_uint(*uid); print_str("]"); }
+                        print_str("\n");
                     }
                 }
             }
