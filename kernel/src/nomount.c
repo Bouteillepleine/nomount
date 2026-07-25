@@ -1618,6 +1618,30 @@ static int nomount_genl_del_uid(struct sk_buff *skb, struct genl_info *info)
     return ret;
 }
 
+static int nomount_genl_dump_uids(struct sk_buff *skb, struct netlink_callback *cb)
+{
+    int id = cb->args[0];
+    void *ptr;
+
+    if (!static_branch_unlikely(&nomount_active_uids)) return 0;
+    rcu_read_lock();
+    while ((ptr = idr_get_next(&nomount_uid_idr, &id)) != NULL) {
+        void *hdr;
+        hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
+                          &nomount_genl_family, NLM_F_MULTI, 8);
+        if (!hdr) break;
+        if (nla_put_u32(skb, NOMOUNT_ATTR_UID, id)) {
+            genlmsg_cancel(skb, hdr);
+            break;
+        }
+        genlmsg_end(skb, hdr);
+        id++;
+    }
+    rcu_read_unlock();
+    cb->args[0] = id;
+    return skb->len;
+}
+
 static int nomount_genl_get_version(struct sk_buff *skb, struct genl_info *info)
 {
     struct sk_buff *msg;
@@ -1660,6 +1684,7 @@ static const struct genl_ops nomount_genl_ops[] = {
 { .cmd = NM_CMD_ADD_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_add_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
 { .cmd = NM_CMD_DEL_UID, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_del_uid, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
 { .cmd = NM_CMD_GET_LIST, .flags = GENL_ADMIN_PERM, .doit = NULL, .dumpit = nomount_genl_dump_rules, NM_OPS_POLICY(nomount_genl_policy) },
+{ .cmd = NM_CMD_GET_UIDS, .flags = GENL_ADMIN_PERM, .doit = NULL, .dumpit = nomount_genl_dump_uids, NM_OPS_POLICY(nomount_genl_policy) },
 { .cmd = NM_CMD_GET_VERSION, .flags = GENL_ADMIN_PERM, .doit = nomount_genl_get_version, .dumpit = NULL, NM_OPS_POLICY(nomount_genl_policy) },
 };
 

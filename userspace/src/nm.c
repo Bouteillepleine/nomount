@@ -114,8 +114,15 @@ void c_main(long *sp) {
         }
 
     } else if (cmd == 'l') {
-        unsigned int len = do_nm_cmd(fd, nm_family, 7, 0, (void *)0, 0, 0x301, &mem);
-        int is_json = (p_count > 0 && p_args[0][0] == 'j');
+        int is_json = 0, is_uids = 0;
+        for (int i = 0; i < p_count; i++) {
+            if (p_args[i][0] == 'j') is_json = 1;
+            if (p_args[i][0] == 'u') is_uids = 1;
+        }
+        if (is_uids) is_json = 1;
+
+        int target_cmd = is_uids ? 8 : 7;
+        unsigned int len = do_nm_cmd(fd, nm_family, target_cmd, 0, (void *)0, 0, 0x301, &mem);
         int offset = 2;
         if (is_json) print_str("[\n");
 
@@ -123,38 +130,40 @@ void c_main(long *sp) {
             for (struct nlmsghdr *msg = (void *)mem.rx_buf; msg->nlmsg_len && msg->nlmsg_len <= len;
                     len -= msg->nlmsg_len, msg = (void *)((char *)msg + msg->nlmsg_len)) {
                 if (msg->nlmsg_type == 3 || msg->nlmsg_type == 2) goto list_done; 
-                char *v = get_attr(msg, 1); 
-                char *r = get_attr(msg, 2); 
-                unsigned int *flags = get_attr(msg, 3);
-                unsigned int *uid = get_attr(msg, 4);
 
-                if (v && r) {
-                    int is_whiteout    = (flags && (*flags & 4));
-                    int is_virtual_dir = (flags && (*flags & 2)); 
+                if (is_uids) {
+                    unsigned int *uid = get_attr(msg, 4); /* NOMOUNT_ATTR_UID */
+                    if (uid) {
+                        if (offset == 0) print_str(",\n");
+                        print_str("  "); print_uint(*uid);
+                        offset = 0;
+                    }
+                } else {
+                    char *v = get_attr(msg, 1); 
+                    char *r = get_attr(msg, 2); 
+                    unsigned int *flags = get_attr(msg, 3);
+                    unsigned int *uid = get_attr(msg, 4);
 
-                    if (is_json) {
-                        print_str((const char *)",\n  {\n    \"virtual\": \"" + offset); offset = 0;
-                        print_str(v);
-                        
-                        if (is_whiteout) {
-                            print_str("\",\n    \"whiteout\": true");
-                        } else if (is_virtual_dir) {
-                            print_str("\",\n    \"virtual_dir\": true");
+                    if (v && r) {
+                        int is_whiteout    = (flags && (*flags & 4));
+                        int is_virtual_dir = (flags && (*flags & 2)); 
+
+                        if (is_json) {
+                            print_str((const char *)",\n  {\n    \"virtual\": \"" + offset); offset = 0;
+                            print_str(v);
+                            if (is_whiteout) print_str("\",\n    \"whiteout\": true");
+                            else if (is_virtual_dir) print_str("\",\n    \"virtual_dir\": true");
+                            else { print_str("\",\n    \"real\": \""); print_str(r); print_str("\""); }
+                            if (uid && *uid != 0) { print_str(",\n    \"uid\": "); print_uint(*uid); }
+                            print_str("\n  }");
                         } else {
-                            print_str("\",\n    \"real\": \""); print_str(r); print_str("\"");
+                            print_str(v);
+                            if (is_whiteout) print_str(" (whiteout)");
+                            else if (is_virtual_dir) print_str(" (virtual dir)");
+                            else { print_str(" -> "); print_str(r); }
+                            if (uid && *uid != 0) { print_str(" [UID: "); print_uint(*uid); print_str("]"); }
+                            print_str("\n");
                         }
-
-                        if (uid && *uid != 0) { print_str(",\n    \"uid\": "); print_uint(*uid); }
-                        print_str("\n  }");
-                    } else {
-                        print_str(v);
-                        
-                        if (is_whiteout) print_str(" (whiteout)");
-                        else if (is_virtual_dir) print_str(" (virtual dir)");
-                        else { print_str(" -> "); print_str(r); }
-                        if (uid && *uid != 0) { print_str(" [UID: "); print_uint(*uid); print_str("]"); }
-
-                        print_str("\n");
                     }
                 }
             }
