@@ -491,16 +491,18 @@ async function loadExclusions() {
     const loadId = ++exclusionsLoadId;
 
     try {
-        const readResult = await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`);
-        if (readResult.errno !== 0) throw new Error(readResult.stderr || 'Failed to read exclusions');
+        const { stdout } = await exec(`${NM_BIN} ls uid 2>/dev/null`);
 
-        const blockedUids = parseUidList(readResult.stdout);
-        if (readResult.stdout !== serializeUidList(blockedUids)) {
-            const migrationResult = await exec(buildWriteUidListCmd(blockedUids));
-            if (migrationResult.errno !== 0) throw new Error(migrationResult.stderr || 'Failed to migrate exclusions');
+        let blockedUids = [];
+        try {
+            const parsed = JSON.parse(stdout.trim());
+            if (Array.isArray(parsed)) blockedUids = parsed.map(String);
+        } catch (e) { 
+            console.warn("No UIDs found or parse error");
         }
 
         if (blockedUids.length > 0) try { await ensureAppsCache(); } catch {}
+
         const appsMap = new Map(allAppsCache.map(app => [app.uid, app]));
         const htmlArr = blockedUids.map(uid => {
             const app = appsMap.get(uid);
@@ -663,19 +665,12 @@ function renderNextAppBatch() {
 async function removeExclusion(uid, name) {
     showToast(translate('unblocking_name', { name }));
     try {
-        const uidStr = normalizeUidList([uid])[0];
-        if (!uidStr) throw new Error('Invalid UID');
-
-        const readResult = await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`);
-        if (readResult.errno !== 0) throw new Error(readResult.stderr || 'Failed to read exclusions');
-
-        const remainingUids = parseUidList(readResult.stdout).filter(value => value !== uidStr);
-        const writeResult = await exec(buildWriteUidListCmd(remainingUids));
-        if (writeResult.errno !== 0) throw new Error(writeResult.stderr || 'Failed to update exclusions');
-
-        const unblockResult = await exec(`${NM_BIN} unblock ${uidStr}`);
-        if (unblockResult.errno !== 0) throw new Error(unblockResult.stderr || 'Failed to unblock UID');
+        await exec(`${NM_BIN} unblock ${uid}`);
+        const remainingUids = parseUidList((await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`)).stdout).filter(u => u !== String(uid));
+        await exec(buildWriteUidListCmd(remainingUids));
+        showToast(translate('blocked_saved'));
     } catch { showToast(translate('error_unblocking')); }
+
     await loadExclusions();
 }
 
@@ -687,20 +682,12 @@ async function addExclusion(uid, name) {
     }
 
     try {
-        const readResult = await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`);
-        if (readResult.errno !== 0) throw new Error(readResult.stderr || 'Failed to read exclusions');
-
-        const currentUids = parseUidList(readResult.stdout);
-        const alreadyBlocked = currentUids.includes(uidStr);
-        if (!alreadyBlocked) {
-            const writeResult = await exec(buildWriteUidListCmd([...currentUids, uidStr]));
-            if (writeResult.errno !== 0) throw new Error(writeResult.stderr || 'Failed to update exclusions');
-        }
-
-        const blockResult = await exec(`${NM_BIN} block ${uidStr}`);
-        if (blockResult.errno !== 0) showToast(translate('blocked_saved'));
-        else showToast(alreadyBlocked ? translate('blocked_already') : translate('blocked', { name }));
+        await exec(`${NM_BIN} block ${uidStr}`);
+        const currentUids = parseUidList((await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`)).stdout);
+        if (!currentUids.includes(uidStr)) await exec(buildWriteUidListCmd([...currentUids, uidStr]));
+        showToast(translate('blocked_saved'));
     } catch { showToast(translate('error_blocking')); }
+
     await loadExclusions();
 }
 
