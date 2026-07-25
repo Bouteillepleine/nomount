@@ -193,6 +193,7 @@ enum {
     NM_CMD_ADD_UID,
     NM_CMD_DEL_UID,
     NM_CMD_GET_LIST,
+    NM_CMD_GET_UIDS,
     __NM_CMD_MAX,
 };
 
