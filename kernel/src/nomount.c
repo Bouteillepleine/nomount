@@ -225,7 +225,7 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
             struct inode *new_inode = nomount_create_new_inode(dir->i_sb, rule);
             if (likely(new_inode)) {
                 dentry->d_op = &nm_dops;
-                nm_debug("Lookup hijacked! Splicing inode %llu into dentry '%s'\n", new_inode->i_ino, name);
+                nm_debug("Lookup hijacked! Splicing inode %lu into dentry '%s'\n", new_inode->i_ino, name);
                 return d_splice_alias(new_inode, dentry);
             }
         }
@@ -962,7 +962,7 @@ static inline void nomount_hijack_virtual_parent(struct nomount_dir_node *dir_no
 #endif
 
         smp_store_release(&inode->i_fop, &nm_fop->fake_fop);
-        nm_debug("i_fop successfully hijacked for virtual parent dir (ino: %llu)\n", inode->i_ino);
+        nm_debug("i_fop successfully hijacked for virtual parent dir (ino: %lu)\n", inode->i_ino);
     }
 }
 
@@ -984,7 +984,7 @@ static inline void nomount_hijack_dir_inode(struct nomount_dir_node *dir_node, s
         if (nm_iop->orig_iop->rename) nm_iop->fake_iop.rename = nomount_hijacked_rename;
         smp_store_release(&inode->i_op, &nm_iop->fake_iop);
         inode->i_flags |= S_PRIVATE;
-        nm_debug("i_op successfully hijacked for parent dir (ino: %llu)\n", inode->i_ino);
+        nm_debug("i_op successfully hijacked for parent dir (ino: %lu)\n", inode->i_ino);
     }
 }
 
@@ -1011,14 +1011,14 @@ static void nomount_restore_dir_node(struct nomount_dir_node *dir_node)
     if (nm_iop && nm_iop->dir_node == dir_node) {
         smp_store_release(&t_inode->i_op, nm_iop->orig_iop);
         if (!nm_iop->had_private_flag) t_inode->i_flags &= ~S_PRIVATE;
-        nm_debug("Successfully cured i_op for dir %llu\n", t_inode->i_ino);
+        nm_debug("Successfully cured i_op for dir %lu\n", t_inode->i_ino);
         call_rcu(&nm_iop->rcu, nm_iop_rcu_free);
     }
 
     nm_fop = __get_nm(smp_load_acquire(&t_inode->i_fop), struct nm_fop, fake_fop);
     if (nm_fop && nm_fop->dir_node == dir_node) {
         smp_store_release(&t_inode->i_fop, nm_fop->orig_fop);
-        nm_debug("Successfully cured i_fop for dir %llu\n", t_inode->i_ino);
+        nm_debug("Successfully cured i_fop for dir %lu\n", t_inode->i_ino);
         call_rcu(&nm_fop->rcu, nm_fop_rcu_free);
     }
     spin_unlock(&t_inode->i_lock);
