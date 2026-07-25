@@ -20,10 +20,10 @@
 #define NM_MODULE_VERSION "12"
 #define NOMOUNT_VERSION    12
 #define NOMOUNT_HASH_BITS  12
-#define NM_FLAG_INTERNAL_DIR (1 << 0)
-#define NM_FLAG_IS_DIR       (1 << 1)
-#define NM_FLAG_WHITEOUT     (1 << 2)
-#define NM_FLAG_HAS_STAT     (1 << 3)
+#define NM_FLAG_IS_DIR      (1 << 0)
+#define NM_FLAG_VIRTUAL_DIR (1 << 1)
+#define NM_FLAG_WHITEOUT    (1 << 2)
+#define NM_FLAG_HAS_STAT    (1 << 3)
 
 /* logs */
 #define nm_debug(fmt, ...) printk(KERN_DEBUG "NoMount: [DEBUG] " fmt, ##__VA_ARGS__)
