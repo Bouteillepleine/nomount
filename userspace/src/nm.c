@@ -129,22 +129,31 @@ void c_main(long *sp) {
                 unsigned int *uid = get_attr(msg, 4);
 
                 if (v && r) {
-                    int is_whiteout = (flags && (*flags & 4));
+                    int is_whiteout    = (flags && (*flags & 4));
+                    int is_virtual_dir = (flags && (*flags & 2)); 
+
                     if (is_json) {
                         print_str((const char *)",\n  {\n    \"virtual\": \"" + offset); offset = 0;
                         print_str(v);
+                        
                         if (is_whiteout) {
                             print_str("\",\n    \"whiteout\": true");
+                        } else if (is_virtual_dir) {
+                            print_str("\",\n    \"virtual_dir\": true");
                         } else {
                             print_str("\",\n    \"real\": \""); print_str(r); print_str("\"");
                         }
+
                         if (uid && *uid != 0) { print_str(",\n    \"uid\": "); print_uint(*uid); }
                         print_str("\n  }");
                     } else {
                         print_str(v);
+                        
                         if (is_whiteout) print_str(" (whiteout)");
+                        else if (is_virtual_dir) print_str(" (virtual dir)");
                         else { print_str(" -> "); print_str(r); }
                         if (uid && *uid != 0) { print_str(" [UID: "); print_uint(*uid); print_str("]"); }
+
                         print_str("\n");
                     }
                 }

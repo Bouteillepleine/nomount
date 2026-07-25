@@ -143,7 +143,7 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
 
     info->flags = rule->flags;
     info->dir_node = rule->this_dir;
-    if (rule->flags & NM_FLAG_INTERNAL_DIR) {
+    if (rule->flags & NM_FLAG_VIRTUAL_DIR) {
         info->r_path.dentry = NULL;
         info->r_path.mnt = NULL;
     } else {
@@ -159,7 +159,7 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
 
     inode->i_private = info;
     inode->i_ino = rule->v_ino;
-    if (rule->flags & NM_FLAG_INTERNAL_DIR) {
+    if (rule->flags & NM_FLAG_VIRTUAL_DIR) {
         inode->i_mode = S_IFDIR | 0755;
         inode->i_size = 4096;
         inode->i_blocks = 8;
@@ -221,7 +221,7 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
             return NULL;
         }
 
-        if ((rule->flags & NM_FLAG_INTERNAL_DIR) || rule->r_path.dentry) {
+        if ((rule->flags & NM_FLAG_VIRTUAL_DIR) || rule->r_path.dentry) {
             struct inode *new_inode = nomount_create_new_inode(dir->i_sb, rule);
             if (likely(new_inode)) {
                 dentry->d_op = &nm_dops;
@@ -496,7 +496,7 @@ static int nm_open(struct inode *inode, struct file *file)
     const struct cred *old_cred;
 
     if (unlikely(!info)) return -ENODEV;
-    if (unlikely(info->flags & NM_FLAG_INTERNAL_DIR)) {
+    if (unlikely(info->flags & NM_FLAG_VIRTUAL_DIR)) {
         file->private_data = NULL;
         return 0;
     }
@@ -633,7 +633,7 @@ static int nm_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 static ssize_t nm_listxattr(struct dentry *dentry, char *buffer, size_t size)
 {
     struct nm_inode_info *info = d_backing_inode(dentry)->i_private;
-    if (unlikely(!info || (info->flags & NM_FLAG_INTERNAL_DIR) || !d_backing_inode(info->r_path.dentry)->i_op->listxattr))
+    if (unlikely(!info || (info->flags & NM_FLAG_VIRTUAL_DIR) || !d_backing_inode(info->r_path.dentry)->i_op->listxattr))
         return -EOPNOTSUPP;
 
     return d_backing_inode(info->r_path.dentry)->i_op->listxattr(info->r_path.dentry, buffer, size);
@@ -646,7 +646,7 @@ static int nm_file_getattr(IDMAP_ARG const struct path *path, struct kstat *stat
     int res;
     if (unlikely(!info)) return -EIO;
 
-    if (unlikely(info->flags & NM_FLAG_INTERNAL_DIR)) {
+    if (unlikely(info->flags & NM_FLAG_VIRTUAL_DIR)) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
         generic_fillattr(IDMAP_CALL request_mask, v_inode, stat);
 #else
@@ -676,7 +676,7 @@ static int nm_setattr(IDMAP_ARG struct dentry *dentry, struct iattr *attr)
     int err;
 
     if (unlikely(!info)) return -EIO;
-    if (info->flags & NM_FLAG_INTERNAL_DIR) return 0;
+    if (info->flags & NM_FLAG_VIRTUAL_DIR) return 0;
 
     inode_lock(d_backing_inode(info->r_path.dentry));
     err = notify_change(IDMAP_CALL info->r_path.dentry, attr, NULL);
@@ -728,7 +728,7 @@ static int nm_dir_iterate_dir(struct file *file, struct dir_context *ctx)
         ctx->pos = proxy_ctx.ctx.pos;
         if (res < 0 || proxy_ctx.emitted > 0) return res;
         ctx->pos = nm_pack_pos(0);
-    } else if (info && (info->flags & NM_FLAG_INTERNAL_DIR)) {
+    } else if (info && (info->flags & NM_FLAG_VIRTUAL_DIR)) {
         if (ctx->pos < 2 && !dir_emit_dots(file, ctx)) return 0;
         ctx->pos = nm_pack_pos(0);
     } else {
@@ -751,7 +751,7 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
         struct nomount_rule *c_rule = nomount_find_child_rule(info->dir_node, name, len, v_hash);
         if (c_rule) {
             if (c_rule->flags & NM_FLAG_WHITEOUT) { d_add(dentry, NULL); return NULL; }
-            if ((c_rule->flags & NM_FLAG_INTERNAL_DIR) || c_rule->r_path.dentry) {
+            if ((c_rule->flags & NM_FLAG_VIRTUAL_DIR) || c_rule->r_path.dentry) {
                 struct inode *new_inode = nomount_create_new_inode(dir->i_sb, c_rule);
                 if (new_inode) return d_splice_alias(new_inode, dentry);
             }
@@ -761,7 +761,7 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
     if (r_dir && r_dir->i_op && r_dir->i_op->lookup)
         return r_dir->i_op->lookup(r_dir, dentry, flags);
 
-    if (info && (info->flags & NM_FLAG_INTERNAL_DIR)) {
+    if (info && (info->flags & NM_FLAG_VIRTUAL_DIR)) {
         d_add(dentry, NULL);
         return NULL;
     }
@@ -1222,7 +1222,7 @@ static int nomount_generate_virtual_topology(struct nomount_rule *target_rule)
 
         irule->v_len = parent_len;
         irule->v_hash = h_parent;
-        irule->flags = NM_FLAG_IS_DIR | NM_FLAG_INTERNAL_DIR;
+        irule->flags = NM_FLAG_IS_DIR | NM_FLAG_VIRTUAL_DIR;
         irule->v_ino = (unsigned long)h_parent;
         irule->target_uid = 0;
 
