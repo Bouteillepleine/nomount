@@ -128,6 +128,24 @@ struct nomount_rule {
     char paths[]; 
 };
 
+/*** Operaction Vectors ***/
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+static const struct file_operations nm_file_fops_mmap_prepare;
+#endif
+static const struct file_operations nm_file_fops;
+static const struct inode_operations nm_file_iops;
+static const struct file_operations nm_dir_fops;
+static const struct inode_operations nm_dir_iops;
+static const struct dentry_operations nm_dops;
+
+/*** Rule Operations ***/
+static int nomount_generate_virtual_topology(struct nomount_rule *target_rule);
+static struct nomount_rule *nm_alloc_rule(const char *v_path, const char *r_path, u16 v_len, u16 r_len, u32 flags);
+static void nm_free_rule(struct nomount_rule *rule);
+static void nm_detach_rule_locked(struct nomount_rule *rule, struct hlist_head *victims, bool prune);
+static struct nomount_rule *nomount_find_child_rule(struct nomount_dir_node *dir_node, const char *name, size_t len, u32 hash);
+static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, struct nomount_rule *rule);
+
 /* =====================================================================
  * NoMount VFS Offset Protocol
  * =====================================================================
@@ -188,7 +206,9 @@ enum {
     __NOMOUNT_ATTR_MAX,
 };
 
-#define NOMOUNT_ATTR_MAX (__NOMOUNT_ATTR_MAX - 1)
+static struct genl_family nomount_genl_family;
+static const struct genl_ops nomount_genl_ops[];
+static const struct nla_policy nomount_genl_policy[__NOMOUNT_ATTR_MAX];
 
 /* * Compat macros * */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
