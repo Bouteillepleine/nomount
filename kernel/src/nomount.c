@@ -227,15 +227,8 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     }
 
 fallback:
-    /* If we bailed because THIS reader's UID is blocked (not because there's no
-     * rule), tag the real/negative dentry we're about to cache with nm_dops so
-     * nm_d_revalidate re-checks it per-UID -- otherwise a blocked reader's cached
-     * dentry pollutes other UIDs' view. Gate on a rule actually existing, else a
-     * normal real file (no rule) would loop on invalidation. */
-    if (nm_iop && nm_iop->dir_node &&
-        nomount_is_uid_blocked(current_uid().val) &&
-        nomount_find_child_rule(nm_iop->dir_node, name, len,
-                                full_name_hash(NULL, name, len)))
+    if (nm_iop && nm_iop->dir_node && nomount_is_uid_blocked(current_uid().val) &&
+        nomount_find_child_rule(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len)))
         nm_install_dentry_ops(dentry);
 
     if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->lookup) {
@@ -649,31 +642,10 @@ static ssize_t nm_listxattr(struct dentry *dentry, char *buffer, size_t size)
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-/* Pre-4.11 inode_operations->getattr signature: (vfsmount, dentry, kstat).
- * vfs_getattr_nosec()/generic_fillattr() are the 2-arg forms here. */
 static int nm_file_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
-{
-    struct inode *v_inode = d_backing_inode(dentry);
-    struct nm_inode_info *info = v_inode->i_private;
-    int res;
-    if (unlikely(!info)) return -EIO;
-
-    if (unlikely(info->flags & NM_FLAG_VIRTUAL_DIR)) {
-        generic_fillattr(v_inode, stat);
-        stat->ino = info->v_ino;
-        stat->dev = v_inode->i_sb->s_dev;
-        return 0;
-    }
-
-    res = vfs_getattr_nosec(&info->r_path, stat);
-    if (likely(res == 0)) {
-        stat->ino = info->v_ino;
-        stat->dev = v_inode->i_sb->s_dev;
-    }
-    return res;
-}
 #else
 static int nm_file_getattr(IDMAP_ARG const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
+#endif
 {
     struct inode *v_inode = d_backing_inode(path->dentry);
     struct nm_inode_info *info = v_inode->i_private;
@@ -691,14 +663,17 @@ static int nm_file_getattr(IDMAP_ARG const struct path *path, struct kstat *stat
         return 0;
     }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+    res = vfs_getattr_nosec(&info->r_path, stat);
+#else
     res = vfs_getattr_nosec(&info->r_path, stat, request_mask, query_flags);
+#endif
     if (likely(res == 0)) {
         stat->ino = info->v_ino;
         stat->dev = v_inode->i_sb->s_dev;
     }
     return res;
 }
-#endif
 
 static int nm_setattr(IDMAP_ARG struct dentry *dentry, struct iattr *attr)
 {
@@ -856,8 +831,8 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
     /* Is this a dentry WE instantiated (an injected file/dir inode)? Used below to
      * drop stale ghosts and to keep the per-UID view consistent. */
     injected = dentry->d_inode &&
-        (dentry->d_inode->i_op == &nm_file_iops ||
-         dentry->d_inode->i_op == &nm_dir_iops);
+               (dentry->d_inode->i_op == &nm_file_iops ||
+                 dentry->d_inode->i_op == &nm_dir_iops);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
     parent_dir = dir;
@@ -885,13 +860,12 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
      * invalidate it so the path re-resolves to the real fs. This kills the
      * "ghost dentry" that otherwise survived del/clear (even drop_caches) until a
      * reboot or a re-hijack of the parent. */
-    if (!pdir)
-        return injected ? 0 : 1;
+    if (!pdir) return injected ? 0 : 1;
 
     hash = full_name_hash(NULL, dentry->d_name.name, dentry->d_name.len);
     rule = nomount_find_child_rule(pdir, dentry->d_name.name, dentry->d_name.len, hash);
 
-    if (!rule) return 0;                                              /* rule gone -> re-resolve */
+    if (!rule) return 0;
     if (rule->flags & NM_FLAG_WHITEOUT) return d_is_negative(dentry) ? 1 : 0;
 
     /* Per-UID consistency: a BLOCKED reader must see the stock fs (non-injected),
