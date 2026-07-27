@@ -152,11 +152,6 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
     }
 
     info->v_ino = rule->v_ino;
-    if (rule->flags & NM_FLAG_HAS_STAT) {
-        info->v_size = rule->v_size;
-        info->v_blocks = rule->v_blocks;
-    }
-
     inode->i_private = info;
     inode->i_ino = rule->v_ino;
     if (rule->flags & NM_FLAG_VIRTUAL_DIR) {
@@ -659,10 +654,6 @@ static int nm_file_getattr(IDMAP_ARG const struct path *path, struct kstat *stat
 
     res = vfs_getattr_nosec(&info->r_path, stat, request_mask, query_flags);
     if (likely(res == 0)) {
-        if (likely(info->flags & NM_FLAG_HAS_STAT)) {
-            stat->size = info->v_size;
-            stat->blocks = info->v_blocks;
-        }
         stat->ino = info->v_ino;
         stat->dev = v_inode->i_sb->s_dev;
     }
@@ -1306,13 +1297,7 @@ static struct nomount_rule *nm_alloc_rule(const char *v_path, const char *r_path
          S_ISDIR(d_backing_inode(rule->r_path.dentry)->i_mode)) rule->flags |= NM_FLAG_IS_DIR;
 
     if (kern_path(nm_get_vpath(rule), LOOKUP_FOLLOW, &v_path_struct) == 0) {
-        struct kstat temp_stat;
         rule->v_ino = d_backing_inode(v_path_struct.dentry)->i_ino;
-        vfs_getattr(&v_path_struct, &temp_stat, (STATX_BASIC_STATS | STATX_BTIME), AT_STATX_SYNC_AS_STAT);
-
-        rule->flags |= NM_FLAG_HAS_STAT;
-        rule->v_size = temp_stat.size;
-        rule->v_blocks = temp_stat.blocks;
         path_put(&v_path_struct);
     } else {
          rule->v_ino = (unsigned long)rule->v_hash;
