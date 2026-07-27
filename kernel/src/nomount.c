@@ -785,7 +785,7 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
         return r_dir->i_op->lookup(r_dir, dentry, flags);
 
     if (info && (info->flags & NM_FLAG_VIRTUAL_DIR)) {
-        NM_SET_DOPS(dentry);
+        nm_install_dentry_ops(dentry);
         d_add(dentry, NULL);
         return NULL;
     }
