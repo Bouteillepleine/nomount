@@ -14,7 +14,7 @@ static DEFINE_STATIC_KEY_FALSE(nomount_active_uids);
 
 /*** Helpers ***/
 
-static __always_inline bool nomount_is_uid_blocked(uid_t uid) 
+static __always_inline bool nomount_is_uid_blocked(uid_t uid)
 {
     bool is_blocked;
     if (!static_branch_unlikely(&nomount_active_uids)) return false;
@@ -29,6 +29,21 @@ static __always_inline bool nomount_is_uid_blocked(uid_t uid)
     type *__o = likely(ptr) ? container_of(ptr, type, member) : NULL; \
     (__o && nm_probe_read(&__sig, &__o->signature, sizeof(__sig)) == 0 && __sig == NOMOUNT_MAGIC_SIG) ? __o : NULL; \
 })
+
+/* Install our dentry ops on a dentry we manage. Setting d_op alone is NOT enough:
+ * a dentry allocated on a hijacked sb (e.g. overlayfs, whose s_d_op is
+ * ovl_dentry_operations) already has the sb's DCACHE_OP_* flags set, so the VFS
+ * would keep calling ops (d_weak_revalidate/d_real/d_release/...) that nm_dops
+ * does not provide -> NULL deref (seen as an OOPS in path_lookupat when resolving
+ * '..' of a synthesized virtual dir). Clear the inherited op flags and set only
+ * the ones nm_dops actually implements (d_revalidate). */
+#define NM_SET_DOPS(d) do { \
+    (d)->d_flags &= ~(DCACHE_OP_HASH | DCACHE_OP_COMPARE | DCACHE_OP_REVALIDATE | \
+                      DCACHE_OP_WEAK_REVALIDATE | DCACHE_OP_DELETE | DCACHE_OP_PRUNE | \
+                      DCACHE_OP_REAL); \
+    (d)->d_op = &nm_dops; \
+    (d)->d_flags |= DCACHE_OP_REVALIDATE; \
+} while (0)
 
 static __always_inline struct nomount_dir_node *nomount_get_dir_node(struct inode *inode) 
 {
@@ -119,7 +134,7 @@ static inline void nomount_emit_virtual_children(struct dir_context *ctx, struct
     idr_for_each_entry_continue(&dir_node->children_idr, child, id) {
         ctx->pos = nm_pack_pos(id);
         if (child->rule->target_uid == 0 || child->rule->target_uid == current_uid().val) {
-            if (!(child->flags & NM_FLAG_WHITEOUT) && 
+            if (!(child->flags & NM_FLAG_WHITEOUT) &&
                 !dir_emit(ctx, child->name, child->name_len, child->fake_ino, child->d_type)) break;
         }
         ctx->pos = nm_pack_pos(id + 1);
@@ -152,6 +167,7 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
     }
 
     info->v_ino = rule->v_ino;
+
     inode->i_private = info;
     inode->i_ino = rule->v_ino;
     if (rule->flags & NM_FLAG_VIRTUAL_DIR) {
@@ -183,7 +199,6 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
                 inode->i_fop = &nm_file_fops;
         }
         inode->i_mapping = real_inode->i_mapping;
-        inode->i_mapping = real_inode->i_mapping;
     }
 
     inode->i_flags |= S_PRIVATE | S_NOATIME | S_NOCMTIME | S_NOSEC;
@@ -211,7 +226,7 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     rule = nomount_find_child_rule(nm_iop->dir_node, name, len, v_hash);
     if (likely(rule)) {
         if (rule->flags & NM_FLAG_WHITEOUT) {
-            dentry->d_op = &nm_dops;
+            NM_SET_DOPS(dentry);
             d_add(dentry, NULL); 
             return NULL;
         }
@@ -219,7 +234,7 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
         if ((rule->flags & NM_FLAG_VIRTUAL_DIR) || rule->r_path.dentry) {
             struct inode *new_inode = nomount_create_new_inode(dir->i_sb, rule);
             if (likely(new_inode)) {
-                dentry->d_op = &nm_dops;
+                NM_SET_DOPS(dentry);
                 nm_debug("Lookup hijacked! Splicing inode %lu into dentry '%s'\n", new_inode->i_ino, name);
                 return d_splice_alias(new_inode, dentry);
             }
@@ -227,6 +242,17 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     }
 
 fallback:
+    /* If we bailed because THIS reader's UID is blocked (not because there's no
+     * rule), tag the real/negative dentry we're about to cache with nm_dops so
+     * nm_d_revalidate re-checks it per-UID -- otherwise a blocked reader's cached
+     * dentry pollutes other UIDs' view. Gate on a rule actually existing, else a
+     * normal real file (no rule) would loop on invalidation. */
+    if (nm_iop && nm_iop->dir_node &&
+        nomount_is_uid_blocked(current_uid().val) &&
+        nomount_find_child_rule(nm_iop->dir_node, name, len,
+                                full_name_hash(NULL, name, len)))
+        NM_SET_DOPS(dentry);
+
     if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->lookup) {
         return nm_iop->orig_iop->lookup(dir, dentry, flags);
     }
@@ -578,9 +604,12 @@ static int nm_mmap_prepare(struct vm_area_desc *desc)
     int ret;
     if (!real_file || !real_file->f_op->mmap_prepare) return -ENODEV;
 
-    desc->file = real_file;
+    /* desc->file is const-qualified as of 6.18. The vm_area_desc is a mutable
+     * on-stack object on the mmap path, so redirect through a cast (preserving
+     * the pre-6.18 behaviour) and restore it afterwards. */
+    *(struct file **)&desc->file = real_file;
     ret = real_file->f_op->mmap_prepare(desc);
-    desc->file = file;
+    *(struct file **)&desc->file = file;
 
     return ret;
 }
@@ -634,6 +663,31 @@ static ssize_t nm_listxattr(struct dentry *dentry, char *buffer, size_t size)
     return d_backing_inode(info->r_path.dentry)->i_op->listxattr(info->r_path.dentry, buffer, size);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+/* Pre-4.11 inode_operations->getattr signature: (vfsmount, dentry, kstat).
+ * vfs_getattr_nosec()/generic_fillattr() are the 2-arg forms here. */
+static int nm_file_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
+{
+    struct inode *v_inode = d_backing_inode(dentry);
+    struct nm_inode_info *info = v_inode->i_private;
+    int res;
+    if (unlikely(!info)) return -EIO;
+
+    if (unlikely(info->flags & NM_FLAG_VIRTUAL_DIR)) {
+        generic_fillattr(v_inode, stat);
+        stat->ino = info->v_ino;
+        stat->dev = v_inode->i_sb->s_dev;
+        return 0;
+    }
+
+    res = vfs_getattr_nosec(&info->r_path, stat);
+    if (likely(res == 0)) {
+        stat->ino = info->v_ino;
+        stat->dev = v_inode->i_sb->s_dev;
+    }
+    return res;
+}
+#else
 static int nm_file_getattr(IDMAP_ARG const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
 {
     struct inode *v_inode = d_backing_inode(path->dentry);
@@ -659,6 +713,7 @@ static int nm_file_getattr(IDMAP_ARG const struct path *path, struct kstat *stat
     }
     return res;
 }
+#endif
 
 static int nm_setattr(IDMAP_ARG struct dentry *dentry, struct iattr *attr)
 {
@@ -741,10 +796,16 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
         u32 v_hash = full_name_hash(NULL, name, len);
         struct nomount_rule *c_rule = nomount_find_child_rule(info->dir_node, name, len, v_hash);
         if (c_rule) {
-            if (c_rule->flags & NM_FLAG_WHITEOUT) { d_add(dentry, NULL); return NULL; }
+            /* Install our dentry ops on every dentry we manage. Without this the
+             * child inherits sb->s_d_op: harmless on a normal fs (NULL), but on an
+             * overlayfs sb it is ovl_dentry_operations, whose d_revalidate/d_real
+             * run against our synthetic inode (no ovl_entry) and return -ECHILD.
+             * nomount_hijacked_lookup already does this for the first level; the
+             * synthesized deeper subtree (a new dir over overlay) needs it too. */
+            if (c_rule->flags & NM_FLAG_WHITEOUT) { NM_SET_DOPS(dentry); d_add(dentry, NULL); return NULL; }
             if ((c_rule->flags & NM_FLAG_VIRTUAL_DIR) || c_rule->r_path.dentry) {
                 struct inode *new_inode = nomount_create_new_inode(dir->i_sb, c_rule);
-                if (new_inode) return d_splice_alias(new_inode, dentry);
+                if (new_inode) { NM_SET_DOPS(dentry); return d_splice_alias(new_inode, dentry); }
             }
         }
     }
@@ -753,6 +814,7 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
         return r_dir->i_op->lookup(r_dir, dentry, flags);
 
     if (info && (info->flags & NM_FLAG_VIRTUAL_DIR)) {
+        NM_SET_DOPS(dentry);
         d_add(dentry, NULL);
         return NULL;
     }
@@ -786,7 +848,7 @@ static int nm_xattr_set(const struct xattr_handler *handler, IDMAP_ARG struct de
     return proxy->orig->set(proxy->orig, IDMAP_CALL dentry, inode, name, buffer, size, flags);
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
 static int nm_d_revalidate(struct inode *dir, const struct qstr *name, struct dentry *dentry, unsigned int flags)
 #else
 static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
@@ -794,29 +856,62 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
 {
     struct inode *parent_dir;
     struct nm_iop *nm_iop;
+    struct nomount_dir_node *pdir = NULL;
     struct nomount_rule *rule;
     u32 hash;
+    bool injected;
 
     if (flags & LOOKUP_RCU)
         return -ECHILD;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+    /* Is this a dentry WE instantiated (an injected file/dir inode)? Used below to
+     * drop stale ghosts and to keep the per-UID view consistent. */
+    injected = dentry->d_inode &&
+        (dentry->d_inode->i_op == &nm_file_iops ||
+         dentry->d_inode->i_op == &nm_dir_iops);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
     parent_dir = dir;
 #else
     parent_dir = d_inode(dentry->d_parent);
 #endif
     if (!parent_dir) return 1;
 
+    /* Resolve the parent's dir_node. A REAL hijacked dir carries it in a
+     * per-inode fake_iop; a SYNTHESIZED virtual dir uses the shared const
+     * nm_dir_iops (no fake_iop) and keeps its dir_node in the inode's private
+     * info. Missing the virtual-dir case made revalidate return 1 (valid) for a
+     * stale NEGATIVE child dentry — created by a transient lookup-before-inject
+     * during `nm add` — so that child (e.g. the 2nd+ .so in a new arm64/ dir)
+     * stayed ENOENT forever and its readdir path-walk could spin. */
     nm_iop = __get_nm(smp_load_acquire(&parent_dir->i_op), struct nm_iop, fake_iop);
-    if (!nm_iop || !nm_iop->dir_node) return 1; 
+    if (nm_iop) {
+        pdir = nm_iop->dir_node;
+    } else if (parent_dir->i_op == &nm_dir_iops) {
+        struct nm_inode_info *pinfo = parent_dir->i_private;
+        if (pinfo) pdir = pinfo->dir_node;
+    }
+    /* Parent is no longer hijacked (its rule/dir_node was removed by del or clear,
+     * and the dir was restored). A cached INJECTED child dentry is now stale --
+     * invalidate it so the path re-resolves to the real fs. This kills the
+     * "ghost dentry" that otherwise survived del/clear (even drop_caches) until a
+     * reboot or a re-hijack of the parent. */
+    if (!pdir)
+        return injected ? 0 : 1;
 
     hash = full_name_hash(NULL, dentry->d_name.name, dentry->d_name.len);
-    rule = nomount_find_child_rule(nm_iop->dir_node, dentry->d_name.name, dentry->d_name.len, hash);
+    rule = nomount_find_child_rule(pdir, dentry->d_name.name, dentry->d_name.len, hash);
 
-    if (!rule) return 0;
+    if (!rule) return 0;                                              /* rule gone -> re-resolve */
     if (rule->flags & NM_FLAG_WHITEOUT) return d_is_negative(dentry) ? 1 : 0;
 
-    return d_is_positive(dentry) ? 1 : 0;
+    /* Per-UID consistency: a BLOCKED reader must see the stock fs (non-injected),
+     * so an injected dentry is invalid for it; a NORMAL reader must see the
+     * injection, so a stock/negative dentry (e.g. one a blocked reader's fallback
+     * cached in the shared dcache) is invalid for it. Re-resolving fixes both. */
+    if (nomount_is_uid_blocked(current_uid().val))
+        return injected ? 0 : 1;
+    return injected ? 1 : 0;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
@@ -1591,8 +1686,14 @@ static int nomount_genl_del_uid(struct sk_buff *skb, struct genl_info *info)
     uid = nla_get_u32(info->attrs[NOMOUNT_ATTR_UID]);
 
     mutex_lock(&nomount_write_mutex);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
     if (idr_remove(&nomount_uid_idr, uid)) {
-        if (idr_is_empty(&nomount_uid_idr)) 
+#else
+    /* pre-4.11 idr_remove() returns void; probe presence first */
+    if (idr_find(&nomount_uid_idr, uid)) {
+        idr_remove(&nomount_uid_idr, uid);
+#endif
+        if (idr_is_empty(&nomount_uid_idr))
             static_branch_disable(&nomount_active_uids);
 
         nm_info("Successfully removed blocked UID: %u\n", uid);
