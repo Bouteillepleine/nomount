@@ -647,7 +647,11 @@ static int nm_file_getattr(struct vfsmount *mnt, struct dentry *dentry, struct k
 static int nm_file_getattr(IDMAP_ARG const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
 #endif
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+    struct inode *v_inode = d_backing_inode(dentry);
+#else
     struct inode *v_inode = d_backing_inode(path->dentry);
+#endif
     struct nm_inode_info *info = v_inode->i_private;
     int res;
     if (unlikely(!info)) return -EIO;
@@ -769,7 +773,10 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
             }
             if ((c_rule->flags & NM_FLAG_VIRTUAL_DIR) || c_rule->r_path.dentry) {
                 struct inode *new_inode = nomount_create_new_inode(dir->i_sb, c_rule);
-                if (new_inode) { NM_SET_DOPS(dentry); return d_splice_alias(new_inode, dentry); }
+                if (new_inode) {
+                    nm_install_dentry_ops(dentry);
+                    return d_splice_alias(new_inode, dentry);
+                }
             }
         }
     }
