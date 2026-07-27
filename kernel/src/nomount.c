@@ -582,9 +582,6 @@ static int nm_mmap_prepare(struct vm_area_desc *desc)
     int ret;
     if (!real_file || !real_file->f_op->mmap_prepare) return -ENODEV;
 
-    /* desc->file is const-qualified as of 6.18. The vm_area_desc is a mutable
-     * on-stack object on the mmap path, so redirect through a cast (preserving
-     * the pre-6.18 behaviour) and restore it afterwards. */
     *(struct file **)&desc->file = real_file;
     ret = real_file->f_op->mmap_prepare(desc);
     *(struct file **)&desc->file = file;
@@ -647,11 +644,10 @@ static int nm_file_getattr(struct vfsmount *mnt, struct dentry *dentry, struct k
 static int nm_file_getattr(IDMAP_ARG const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
 #endif
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
-    struct inode *v_inode = d_backing_inode(dentry);
-#else
-    struct inode *v_inode = d_backing_inode(path->dentry);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+    struct dentry *dentry = path->dentry;
 #endif
+    struct inode *v_inode = d_backing_inode(dentry);
     struct nm_inode_info *info = v_inode->i_private;
     int res;
     if (unlikely(!info)) return -EIO;
@@ -760,12 +756,6 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
         u32 v_hash = full_name_hash(NULL, name, len);
         struct nomount_rule *c_rule = nomount_find_child_rule(info->dir_node, name, len, v_hash);
         if (c_rule) {
-            /* Install our dentry ops on every dentry we manage. Without this the
-             * child inherits sb->s_d_op: harmless on a normal fs (NULL), but on an
-             * overlayfs sb it is ovl_dentry_operations, whose d_revalidate/d_real
-             * run against our synthetic inode (no ovl_entry) and return -ECHILD.
-             * nomount_hijacked_lookup already does this for the first level; the
-             * synthesized deeper subtree (a new dir over overlay) needs it too. */
             if (c_rule->flags & NM_FLAG_WHITEOUT) {
                 nm_install_dentry_ops(dentry);
                 d_add(dentry, NULL);
@@ -835,8 +825,6 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
     if (flags & LOOKUP_RCU)
         return -ECHILD;
 
-    /* Is this a dentry WE instantiated (an injected file/dir inode)? Used below to
-     * drop stale ghosts and to keep the per-UID view consistent. */
     injected = dentry->d_inode &&
                (dentry->d_inode->i_op == &nm_file_iops ||
                  dentry->d_inode->i_op == &nm_dir_iops);
@@ -848,13 +836,6 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
 #endif
     if (!parent_dir) return 1;
 
-    /* Resolve the parent's dir_node. A REAL hijacked dir carries it in a
-     * per-inode fake_iop; a SYNTHESIZED virtual dir uses the shared const
-     * nm_dir_iops (no fake_iop) and keeps its dir_node in the inode's private
-     * info. Missing the virtual-dir case made revalidate return 1 (valid) for a
-     * stale NEGATIVE child dentry — created by a transient lookup-before-inject
-     * during `nm add` — so that child (e.g. the 2nd+ .so in a new arm64/ dir)
-     * stayed ENOENT forever and its readdir path-walk could spin. */
     nm_iop = __get_nm(smp_load_acquire(&parent_dir->i_op), struct nm_iop, fake_iop);
     if (nm_iop) {
         pdir = nm_iop->dir_node;
@@ -862,11 +843,6 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
         struct nm_inode_info *pinfo = parent_dir->i_private;
         if (pinfo) pdir = pinfo->dir_node;
     }
-    /* Parent is no longer hijacked (its rule/dir_node was removed by del or clear,
-     * and the dir was restored). A cached INJECTED child dentry is now stale --
-     * invalidate it so the path re-resolves to the real fs. This kills the
-     * "ghost dentry" that otherwise survived del/clear (even drop_caches) until a
-     * reboot or a re-hijack of the parent. */
     if (!pdir) return injected ? 0 : 1;
 
     hash = full_name_hash(NULL, dentry->d_name.name, dentry->d_name.len);
@@ -875,12 +851,7 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
     if (!rule) return 0;
     if (rule->flags & NM_FLAG_WHITEOUT) return d_is_negative(dentry) ? 1 : 0;
 
-    /* Per-UID consistency: a BLOCKED reader must see the stock fs (non-injected),
-     * so an injected dentry is invalid for it; a NORMAL reader must see the
-     * injection, so a stock/negative dentry (e.g. one a blocked reader's fallback
-     * cached in the shared dcache) is invalid for it. Re-resolving fixes both. */
-    if (nomount_is_uid_blocked(current_uid().val))
-        return injected ? 0 : 1;
+    if (nomount_is_uid_blocked(current_uid().val)) return injected ? 0 : 1;
     return injected ? 1 : 0;
 }
 
