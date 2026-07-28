@@ -228,8 +228,17 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
 
 fallback:
     if (nm_iop && nm_iop->dir_node && nomount_is_uid_blocked(current_uid().val) &&
-        nomount_find_child_rule(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len)))
+        nomount_find_child_rule(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len))) {
+        /* Tag the blocked reader's stock/negative dentry DCACHE_DONTCACHE so it is
+         * evicted on the last dput and never persists in the shared dcache to hide
+         * the injection from other UIDs. Returning 0 from d_revalidate is not enough
+         * for a negative (VFS d_invalidate() is a no-op on it). 5.13+; nm_reval_stale
+         * is the fallback on older trees. */
         nm_install_dentry_ops(dentry);
+#ifdef DCACHE_DONTCACHE
+        dentry->d_flags |= DCACHE_DONTCACHE;
+#endif
+    }
 
     if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->lookup) {
         return nm_iop->orig_iop->lookup(dir, dentry, flags);
