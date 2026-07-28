@@ -14,7 +14,7 @@ static DEFINE_STATIC_KEY_FALSE(nomount_active_uids);
 
 /*** Helpers ***/
 
-static __always_inline bool nomount_is_uid_blocked(uid_t uid) 
+static __always_inline bool nomount_is_uid_blocked(uid_t uid)
 {
     bool is_blocked;
     if (!static_branch_unlikely(&nomount_active_uids)) return false;
@@ -119,7 +119,7 @@ static inline void nomount_emit_virtual_children(struct dir_context *ctx, struct
     idr_for_each_entry_continue(&dir_node->children_idr, child, id) {
         ctx->pos = nm_pack_pos(id);
         if (child->rule->target_uid == 0 || child->rule->target_uid == current_uid().val) {
-            if (!(child->flags & NM_FLAG_WHITEOUT) && 
+            if (!(child->flags & NM_FLAG_WHITEOUT) &&
                 !dir_emit(ctx, child->name, child->name_len, child->fake_ino, child->d_type)) break;
         }
         ctx->pos = nm_pack_pos(id + 1);
@@ -152,6 +152,7 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
     }
 
     info->v_ino = rule->v_ino;
+
     inode->i_private = info;
     inode->i_ino = rule->v_ino;
     if (rule->flags & NM_FLAG_VIRTUAL_DIR) {
@@ -183,7 +184,6 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
                 inode->i_fop = &nm_file_fops;
         }
         inode->i_mapping = real_inode->i_mapping;
-        inode->i_mapping = real_inode->i_mapping;
     }
 
     inode->i_flags |= S_PRIVATE | S_NOATIME | S_NOCMTIME | S_NOSEC;
@@ -211,7 +211,7 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     rule = nomount_find_child_rule(nm_iop->dir_node, name, len, v_hash);
     if (likely(rule)) {
         if (rule->flags & NM_FLAG_WHITEOUT) {
-            dentry->d_op = &nm_dops;
+            nm_install_dentry_ops(dentry);
             d_add(dentry, NULL); 
             return NULL;
         }
@@ -219,7 +219,7 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
         if ((rule->flags & NM_FLAG_VIRTUAL_DIR) || rule->r_path.dentry) {
             struct inode *new_inode = nomount_create_new_inode(dir->i_sb, rule);
             if (likely(new_inode)) {
-                dentry->d_op = &nm_dops;
+                nm_install_dentry_ops(dentry);
                 nm_debug("Lookup hijacked! Splicing inode %lu into dentry '%s'\n", new_inode->i_ino, name);
                 return d_splice_alias(new_inode, dentry);
             }
@@ -227,6 +227,10 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     }
 
 fallback:
+    if (nm_iop && nm_iop->dir_node && nomount_is_uid_blocked(current_uid().val) &&
+        nomount_find_child_rule(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len)))
+        nm_install_dentry_ops(dentry);
+
     if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->lookup) {
         return nm_iop->orig_iop->lookup(dir, dentry, flags);
     }
@@ -578,9 +582,9 @@ static int nm_mmap_prepare(struct vm_area_desc *desc)
     int ret;
     if (!real_file || !real_file->f_op->mmap_prepare) return -ENODEV;
 
-    desc->file = real_file;
+    *(struct file **)&desc->file = real_file;
     ret = real_file->f_op->mmap_prepare(desc);
-    desc->file = file;
+    *(struct file **)&desc->file = file;
 
     return ret;
 }
@@ -634,9 +638,16 @@ static ssize_t nm_listxattr(struct dentry *dentry, char *buffer, size_t size)
     return d_backing_inode(info->r_path.dentry)->i_op->listxattr(info->r_path.dentry, buffer, size);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+static int nm_file_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
+#else
 static int nm_file_getattr(IDMAP_ARG const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
+#endif
 {
-    struct inode *v_inode = d_backing_inode(path->dentry);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+    struct dentry *dentry = path->dentry;
+#endif
+    struct inode *v_inode = d_backing_inode(dentry);
     struct nm_inode_info *info = v_inode->i_private;
     int res;
     if (unlikely(!info)) return -EIO;
@@ -652,7 +663,11 @@ static int nm_file_getattr(IDMAP_ARG const struct path *path, struct kstat *stat
         return 0;
     }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+    res = vfs_getattr_nosec(&info->r_path, stat);
+#else
     res = vfs_getattr_nosec(&info->r_path, stat, request_mask, query_flags);
+#endif
     if (likely(res == 0)) {
         stat->ino = info->v_ino;
         stat->dev = v_inode->i_sb->s_dev;
@@ -741,10 +756,17 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
         u32 v_hash = full_name_hash(NULL, name, len);
         struct nomount_rule *c_rule = nomount_find_child_rule(info->dir_node, name, len, v_hash);
         if (c_rule) {
-            if (c_rule->flags & NM_FLAG_WHITEOUT) { d_add(dentry, NULL); return NULL; }
+            if (c_rule->flags & NM_FLAG_WHITEOUT) {
+                nm_install_dentry_ops(dentry);
+                d_add(dentry, NULL);
+                return NULL;
+            }
             if ((c_rule->flags & NM_FLAG_VIRTUAL_DIR) || c_rule->r_path.dentry) {
                 struct inode *new_inode = nomount_create_new_inode(dir->i_sb, c_rule);
-                if (new_inode) return d_splice_alias(new_inode, dentry);
+                if (new_inode) {
+                    nm_install_dentry_ops(dentry);
+                    return d_splice_alias(new_inode, dentry);
+                }
             }
         }
     }
@@ -753,6 +775,7 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
         return r_dir->i_op->lookup(r_dir, dentry, flags);
 
     if (info && (info->flags & NM_FLAG_VIRTUAL_DIR)) {
+        nm_install_dentry_ops(dentry);
         d_add(dentry, NULL);
         return NULL;
     }
@@ -786,7 +809,7 @@ static int nm_xattr_set(const struct xattr_handler *handler, IDMAP_ARG struct de
     return proxy->orig->set(proxy->orig, IDMAP_CALL dentry, inode, name, buffer, size, flags);
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
 static int nm_d_revalidate(struct inode *dir, const struct qstr *name, struct dentry *dentry, unsigned int flags)
 #else
 static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
@@ -794,13 +817,19 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
 {
     struct inode *parent_dir;
     struct nm_iop *nm_iop;
+    struct nomount_dir_node *pdir = NULL;
     struct nomount_rule *rule;
     u32 hash;
+    bool injected;
 
     if (flags & LOOKUP_RCU)
         return -ECHILD;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+    injected = dentry->d_inode &&
+               (dentry->d_inode->i_op == &nm_file_iops ||
+                 dentry->d_inode->i_op == &nm_dir_iops);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
     parent_dir = dir;
 #else
     parent_dir = d_inode(dentry->d_parent);
@@ -808,15 +837,22 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
     if (!parent_dir) return 1;
 
     nm_iop = __get_nm(smp_load_acquire(&parent_dir->i_op), struct nm_iop, fake_iop);
-    if (!nm_iop || !nm_iop->dir_node) return 1; 
+    if (nm_iop) {
+        pdir = nm_iop->dir_node;
+    } else if (parent_dir->i_op == &nm_dir_iops) {
+        struct nm_inode_info *pinfo = parent_dir->i_private;
+        if (pinfo) pdir = pinfo->dir_node;
+    }
+    if (!pdir) return injected ? 0 : 1;
 
     hash = full_name_hash(NULL, dentry->d_name.name, dentry->d_name.len);
-    rule = nomount_find_child_rule(nm_iop->dir_node, dentry->d_name.name, dentry->d_name.len, hash);
+    rule = nomount_find_child_rule(pdir, dentry->d_name.name, dentry->d_name.len, hash);
 
     if (!rule) return 0;
     if (rule->flags & NM_FLAG_WHITEOUT) return d_is_negative(dentry) ? 1 : 0;
 
-    return d_is_positive(dentry) ? 1 : 0;
+    if (nomount_is_uid_blocked(current_uid().val)) return injected ? 0 : 1;
+    return injected ? 1 : 0;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
@@ -1591,8 +1627,14 @@ static int nomount_genl_del_uid(struct sk_buff *skb, struct genl_info *info)
     uid = nla_get_u32(info->attrs[NOMOUNT_ATTR_UID]);
 
     mutex_lock(&nomount_write_mutex);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
     if (idr_remove(&nomount_uid_idr, uid)) {
-        if (idr_is_empty(&nomount_uid_idr)) 
+#else
+    /* pre-4.11 idr_remove() returns void; probe presence first */
+    if (idr_find(&nomount_uid_idr, uid)) {
+        idr_remove(&nomount_uid_idr, uid);
+#endif
+        if (idr_is_empty(&nomount_uid_idr))
             static_branch_disable(&nomount_active_uids);
 
         nm_info("Successfully removed blocked UID: %u\n", uid);
