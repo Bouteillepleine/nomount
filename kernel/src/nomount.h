@@ -292,4 +292,13 @@ static inline int nm_call_iterate(struct file *file, struct dir_context *ctx, co
     #define nm_init_private_list(inode) INIT_LIST_HEAD(&(inode)->i_data.private_list);
 #endif
 
+static inline void nm_install_dentry_ops(struct dentry *dentry)
+{
+    dentry->d_flags &= ~(DCACHE_OP_HASH | DCACHE_OP_COMPARE | 
+                         DCACHE_OP_REVALIDATE | DCACHE_OP_WEAK_REVALIDATE | 
+                         DCACHE_OP_DELETE | DCACHE_OP_PRUNE | DCACHE_OP_REAL);
+    dentry->d_op = &nm_dops;
+    dentry->d_flags |= DCACHE_OP_REVALIDATE;
+}
+
 #endif /* _LINUX_NOMOUNT_H */
