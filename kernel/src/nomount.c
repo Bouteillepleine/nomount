@@ -264,6 +264,9 @@ fallback:
     if (nm_iop && nm_iop->dir_node && nomount_is_uid_blocked(current_uid().val)) {
         if (nomount_get_rule_info(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len), &rule_info)) {
             nm_install_dentry_ops(dentry);
+#ifdef DCACHE_DONTCACHE
+            dentry->d_flags |= DCACHE_DONTCACHE;
+#endif
             if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
         }
     }
