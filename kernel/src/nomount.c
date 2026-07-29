@@ -1076,6 +1076,58 @@ static inline void nomount_hijack_dir_ops(struct nomount_dir_node *dir_node, str
     if (nm_iop || nm_fop) nm_debug("Successfully hijacked VFS ops for parent dir (ino: %lu)\n", inode->i_ino);
 }
 
+#define NM_DEFINE_RCU_FREE(_name, _type, _cache) \
+static void _name(struct rcu_head *head) { \
+    _type *obj = container_of(head, _type, rcu); \
+    kmem_cache_free(_cache, obj); \
+}
+NM_DEFINE_RCU_FREE(nm_iop_rcu_free, struct nm_iop, nm_iop_cachep)
+NM_DEFINE_RCU_FREE(nm_fop_rcu_free, struct nm_fop, nm_fop_cachep)
+
+static void nm_dir_rcu_free(struct rcu_head *head)
+{
+    struct nomount_dir_node *node = container_of(head, struct nomount_dir_node, rcu);
+    idr_destroy(&node->children_idr);
+    kmem_cache_free(nm_dir_cachep, node);
+}
+
+static void nomount_cure_sb_inodes(struct super_block *sb)
+{
+    struct inode *inode;
+    struct nm_iop *nm_iop;
+    struct nm_fop *nm_fop;
+    struct nomount_dir_node *dir_node;
+
+    spin_lock(&sb->s_inode_list_lock);
+    list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
+        if (!inode->i_op && !inode->i_fop) continue;
+
+        nm_iop = __get_nm(inode->i_op, struct nm_iop, fake_iop);
+        nm_fop = __get_nm(inode->i_fop, struct nm_fop, fake_fop);
+        if (!nm_iop && !nm_fop) continue;
+
+        dir_node = NULL;
+        spin_lock(&inode->i_lock);
+        if (nm_iop) {
+            dir_node = nm_iop->dir_node;
+            smp_store_release(&inode->i_op, nm_iop->orig_iop);
+            if (!nm_iop->had_private_flag) inode->i_flags &= ~S_PRIVATE;
+            call_rcu(&nm_iop->rcu, nm_iop_rcu_free);
+        }
+        if (nm_fop) {
+            if (!dir_node) dir_node = nm_fop->dir_node;
+            smp_store_release(&inode->i_fop, nm_fop->orig_fop);
+            call_rcu(&nm_fop->rcu, nm_fop_rcu_free);
+        }
+        spin_unlock(&inode->i_lock);
+
+        if (dir_node && !dir_node->owner_rule) {
+            call_rcu(&dir_node->rcu, nm_dir_rcu_free);
+        }
+    }
+    spin_unlock(&sb->s_inode_list_lock);
+}
+
 static void nomount_restore_superblocks(void)
 {
     struct nm_sop *nm_sop, *tmp;
@@ -1084,6 +1136,7 @@ static void nomount_restore_superblocks(void)
         int i = 0;
         if (nm_sop->sb) {
             shrink_dcache_sb(nm_sop->sb);
+            nomount_cure_sb_inodes(nm_sop->sb);
             smp_store_release(&nm_sop->sb->s_op, nm_sop->orig_sop);
             if (nm_sop->fake_xattr) {
                 smp_store_release((const struct xattr_handler ***)&nm_sop->sb->s_xattr, nm_sop->orig_xattr);
