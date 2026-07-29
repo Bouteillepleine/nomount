@@ -263,7 +263,18 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
 fallback:
     if (nm_iop && nm_iop->dir_node && nomount_is_uid_blocked(current_uid().val)) {
         if (nomount_get_rule_info(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len), &rule_info)) {
+            /* This reader is blocked but the name IS injected: the stock/negative
+             * dentry the real lookup below is about to cache would sit in the
+             * SHARED dcache and hide the injection from every other UID (root
+             * included) until drop_caches/reboot -- d_invalidate() is a no-op on a
+             * negative, so nm_d_revalidate cannot evict it. DCACHE_DONTCACHE drops
+             * it on the last dput instead, so the blocked reader still gets its
+             * stock view for this call and the next lookup by anyone re-resolves
+             * cleanly. (>=5.13; older trees fall back to the d_revalidate path.) */
             nm_install_dentry_ops(dentry);
+#ifdef DCACHE_DONTCACHE
+            dentry->d_flags |= DCACHE_DONTCACHE;
+#endif
             if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
         }
     }
