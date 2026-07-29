@@ -98,6 +98,7 @@ struct nomount_child_node {
 };
 
 struct nomount_dir_node {
+    struct rcu_head rcu;
     struct idr children_idr;
     u64 bloom_mask;
     union {
@@ -124,6 +125,13 @@ struct nomount_rule {
     char paths[]; 
 };
 
+struct nm_rule_info {
+    u32 flags;
+    unsigned long v_ino;
+    struct path r_path;
+    struct nomount_dir_node *this_dir;
+};
+
 /*** Operaction Vectors ***/
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
 static const struct file_operations nm_file_fops_mmap_prepare;
@@ -140,8 +148,7 @@ static struct nomount_rule *nm_alloc_rule(const char *v_path, const char *r_path
 static struct nomount_rule *nm_clone_rule(struct nomount_rule *old_rule, const char *new_v_path, const char *new_r_path, u32 new_flags);
 static void nm_free_rule(struct nomount_rule *rule);
 static void nm_detach_rule_locked(struct nomount_rule *rule, struct hlist_head *victims, bool prune);
-static struct nomount_rule *nomount_find_child_rule(struct nomount_dir_node *dir_node, const char *name, size_t len, u32 hash);
-static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, struct nomount_rule *rule);
+static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, struct nm_rule_info *rule_info);
 
 /* =====================================================================
  * NoMount VFS Offset Protocol
