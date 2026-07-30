@@ -9,7 +9,6 @@
 
 static struct kmem_cache *nm_dir_cachep __read_mostly, *nm_inode_cachep __read_mostly;
 static struct kmem_cache *nm_iop_cachep __read_mostly, *nm_fop_cachep __read_mostly;
-static const struct cred *nm_root_cred;
 static DEFINE_STATIC_KEY_FALSE(nomount_active_uids);
 
 /*** Helpers ***/
@@ -385,7 +384,6 @@ static int nm_open(struct inode *inode, struct file *file)
 {
     struct nm_inode_info *info = inode->i_private;
     struct file *real_file;
-    const struct cred *old_cred;
 
     if (unlikely(!info)) return -ENODEV;
     if (unlikely(info->flags & NM_FLAG_VIRTUAL_DIR)) {
@@ -394,9 +392,7 @@ static int nm_open(struct inode *inode, struct file *file)
     }
     if (unlikely(!info->r_path.dentry)) return -ENODEV;
 
-    old_cred = override_creds(nm_root_cred);
-    real_file = dentry_open(&info->r_path, file->f_flags, nm_root_cred);
-    revert_creds(old_cred);
+    real_file = dentry_open(&info->r_path, file->f_flags, file->f_cred);
     if (IS_ERR(real_file)) return PTR_ERR(real_file);
 
     file->private_data = real_file;
@@ -1629,14 +1625,6 @@ static int __init nomount_init(void)
 {
     int ret;
 
-    struct cred *cred = prepare_creds();
-    if (!cred) { return -ENOMEM; }
-    cred->uid = cred->euid = cred->suid = cred->fsuid = GLOBAL_ROOT_UID;
-    cred->gid = cred->egid = cred->sgid = cred->fsgid = GLOBAL_ROOT_GID;
-    cap_raise(cred->cap_effective, CAP_DAC_OVERRIDE);
-    cap_raise(cred->cap_effective, CAP_DAC_READ_SEARCH);
-    nm_root_cred = cred;
-
     hash_init(nomount_rules_ht);
     nm_dir_cachep = kmem_cache_create("nm_dirs", sizeof(struct nomount_dir_node), 0, SLAB_HWCACHE_ALIGN, NULL);
     nm_inode_cachep = kmem_cache_create("nm_inodes", sizeof(struct nm_inode_info), 0, SLAB_HWCACHE_ALIGN, NULL);
@@ -1649,7 +1637,6 @@ static int __init nomount_init(void)
         if (nm_inode_cachep) kmem_cache_destroy(nm_inode_cachep);
         if (nm_iop_cachep) kmem_cache_destroy(nm_iop_cachep);
         if (nm_fop_cachep) kmem_cache_destroy(nm_fop_cachep);
-        put_cred(nm_root_cred);
         return -ENOMEM;
     }
 
@@ -1660,7 +1647,6 @@ static int __init nomount_init(void)
         kmem_cache_destroy(nm_inode_cachep);
         kmem_cache_destroy(nm_iop_cachep);
         kmem_cache_destroy(nm_fop_cachep);
-        put_cred(nm_root_cred);
         return ret;
     }
 
@@ -1680,7 +1666,6 @@ static void __exit nomount_exit(void)
     kmem_cache_destroy(nm_inode_cachep);
     kmem_cache_destroy(nm_iop_cachep);
     kmem_cache_destroy(nm_fop_cachep);
-    put_cred(nm_root_cred);
 
     nm_info("Unloaded successfully\n");
 }
