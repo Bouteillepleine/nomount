@@ -234,13 +234,17 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     struct nm_rule_info rule_info;
     const char *name = dentry->d_name.name;
     size_t len = dentry->d_name.len;
-    u32 v_hash;
+    struct dentry *res;
 
-    if (unlikely(nomount_is_uid_blocked(current_uid().val) || !nm_iop || !nm_iop->dir_node))
-        goto fallback;
+    if (unlikely(!nm_iop || !nm_iop->dir_node))
+        goto do_real_lookup;
 
-    v_hash = full_name_hash(NULL, name, len);
-    if (nomount_get_rule_info(nm_iop->dir_node, name, len, v_hash, &rule_info)) {
+    if (nomount_get_rule_info(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len), &rule_info)) {
+        if (nomount_is_uid_blocked(current_uid().val)) {
+            if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
+            goto do_real_lookup;
+        }
+
         if (rule_info.flags & NM_FLAG_WHITEOUT) {
             nm_install_dentry_ops(dentry);
             d_add(dentry, NULL); 
@@ -253,23 +257,15 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
             if (likely(new_inode)) {
                 nm_install_dentry_ops(dentry);
                 nm_debug("Lookup hijacked! Splicing inode %lu into dentry '%s'\n", new_inode->i_ino, name);
-                return d_splice_alias(new_inode, dentry);
+                res = d_splice_alias(new_inode, dentry);
+                if (!IS_ERR(res) && res) nm_install_dentry_ops(res);
+                return res;
             }
         }
         if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
     }
 
-fallback:
-    if (nm_iop && nm_iop->dir_node && nomount_is_uid_blocked(current_uid().val)) {
-        if (nomount_get_rule_info(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len), &rule_info)) {
-            nm_install_dentry_ops(dentry);
-#ifdef DCACHE_DONTCACHE
-            dentry->d_flags |= DCACHE_DONTCACHE;
-#endif
-            if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
-        }
-    }
-
+do_real_lookup:
     if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->lookup) {
         return nm_iop->orig_iop->lookup(dir, dentry, flags);
     }
