@@ -306,6 +306,33 @@ do_real_iterate:
     return -ENOTDIR;
 }
 
+static int nomount_hijacked_statfs(struct dentry *dentry, struct kstatfs *buf)
+{
+    struct inode *inode = d_backing_inode(dentry);
+    struct nm_inode_info *info = inode ? inode->i_private : NULL;
+    struct nm_sop *nm_sop = __get_nm(smp_load_acquire(&dentry->d_sb->s_op), struct nm_sop, fake_sop);
+
+    if (inode && (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops) && info) {
+        if (info->r_path.dentry) {
+            return vfs_statfs(&info->r_path, buf);
+        } else if (info->flags & NM_FLAG_VIRTUAL_DIR) {
+            int err = -ENOSYS;
+            struct dentry *parent = dget_parent(dentry);
+            if (parent) {
+                if (nm_sop && nm_sop->orig_sop && nm_sop->orig_sop->statfs)
+                    err = nm_sop->orig_sop->statfs(parent, buf);
+                dput(parent);
+            }
+            return err;
+        }
+    }
+
+    if (nm_sop && nm_sop->orig_sop && nm_sop->orig_sop->statfs)
+        return nm_sop->orig_sop->statfs(dentry, buf);
+
+    return -ENOSYS;
+}
+
 static void nomount_hijacked_destroy_inode(struct inode *inode)
 {
     struct nm_sop *nm_sop;
@@ -827,6 +854,7 @@ static inline void nomount_hijack_superblock(struct super_block *sb)
     nm_sop->fake_sop.destroy_inode = nomount_hijacked_destroy_inode;
     nm_sop->fake_sop.drop_inode = nomount_hijacked_drop_inode;
     nm_sop->fake_sop.evict_inode = nomount_hijacked_evict_inode;
+    if (nm_sop->orig_sop->statfs) nm_sop->fake_sop.statfs = nomount_hijacked_statfs;
 
     if (sb->s_xattr && !nm_sop->orig_xattr) {
         const struct xattr_handler **new_array;
