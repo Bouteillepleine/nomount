@@ -45,6 +45,8 @@ static DEFINE_MUTEX(nomount_write_mutex);
 struct nm_iop {
     struct inode_operations fake_iop; /* MUST be exactly at offset 0 */
     const struct inode_operations *orig_iop;
+    struct dentry_operations fake_dop;
+    const struct dentry_operations *orig_dop;
     u64 signature;
     struct nomount_dir_node *dir_node;
     bool had_private_flag;
@@ -148,6 +150,7 @@ static struct nomount_rule *nm_alloc_rule(const char *v_path, const char *r_path
 static void nm_free_rule(struct nomount_rule *rule);
 static void nm_detach_rule_locked(struct nomount_rule *rule, struct hlist_head *victims, bool prune);
 static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, struct nm_rule_info *rule_info);
+static void nomount_hijack_dentry_ops(struct dentry *dentry, struct nm_iop *nm_iop);
 
 /* =====================================================================
  * NoMount VFS Offset Protocol
@@ -297,14 +300,5 @@ static inline int nm_call_iterate(struct file *file, struct dir_context *ctx, co
 #else
     #define nm_init_private_list(inode) INIT_LIST_HEAD(&(inode)->i_data.private_list);
 #endif
-
-static inline void nm_install_dentry_ops(struct dentry *dentry)
-{
-    dentry->d_flags &= ~(DCACHE_OP_HASH | DCACHE_OP_COMPARE | 
-                         DCACHE_OP_REVALIDATE | DCACHE_OP_WEAK_REVALIDATE | 
-                         DCACHE_OP_DELETE | DCACHE_OP_PRUNE | DCACHE_OP_REAL);
-    dentry->d_op = &nm_dops;
-    dentry->d_flags |= DCACHE_OP_REVALIDATE;
-}
 
 #endif /* _LINUX_NOMOUNT_H */

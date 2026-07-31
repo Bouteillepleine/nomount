@@ -234,7 +234,7 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     struct nm_rule_info rule_info;
     const char *name = dentry->d_name.name;
     size_t len = dentry->d_name.len;
-    struct dentry *res;
+    struct dentry *res, *target;
 
     if (unlikely(!nm_iop || !nm_iop->dir_node))
         goto do_real_lookup;
@@ -242,11 +242,17 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     if (nomount_get_rule_info(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len), &rule_info)) {
         if (nomount_is_uid_blocked(current_uid().val)) {
             if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
-            goto do_real_lookup;
+            if (nm_iop->orig_iop->lookup) {
+                res = nm_iop->orig_iop->lookup(dir, dentry, flags);
+                target = (!IS_ERR(res) && res) ? res : dentry;
+                nomount_hijack_dentry_ops(target, nm_iop);
+                return res;
+            }
+            return ERR_PTR(-EOPNOTSUPP);
         }
 
         if (rule_info.flags & NM_FLAG_WHITEOUT) {
-            nm_install_dentry_ops(dentry);
+            nomount_hijack_dentry_ops(dentry, nm_iop);
             d_add(dentry, NULL); 
             if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
             return NULL;
@@ -255,10 +261,10 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
         if ((rule_info.flags & NM_FLAG_VIRTUAL_DIR) || rule_info.r_path.dentry) {
             struct inode *new_inode = nomount_create_new_inode(dir->i_sb, &rule_info);
             if (likely(new_inode)) {
-                nm_install_dentry_ops(dentry);
+                nomount_hijack_dentry_ops(dentry, nm_iop);
                 nm_debug("Lookup hijacked! Splicing inode %lu into dentry '%s'\n", new_inode->i_ino, name);
                 res = d_splice_alias(new_inode, dentry);
-                if (!IS_ERR(res) && res) nm_install_dentry_ops(res);
+                if (!IS_ERR(res) && res) nomount_hijack_dentry_ops(res, nm_iop);
                 return res;
             }
         }
@@ -664,12 +670,13 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
     const char *name = dentry->d_name.name;
     size_t len = dentry->d_name.len;
     struct nm_rule_info rule_info;
+    struct dentry *res;
 
     if (info && info->dir_node) {
         u32 v_hash = full_name_hash(NULL, name, len);
         if (nomount_get_rule_info(info->dir_node, name, len, v_hash, &rule_info)) {
             if (rule_info.flags & NM_FLAG_WHITEOUT) {
-                nm_install_dentry_ops(dentry);
+                nomount_hijack_dentry_ops(dentry, NULL);
                 d_add(dentry, NULL);
                 if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
                 return NULL;
@@ -677,19 +684,24 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
             if ((rule_info.flags & NM_FLAG_VIRTUAL_DIR) || rule_info.r_path.dentry) {
                 struct inode *new_inode = nomount_create_new_inode(dir->i_sb, &rule_info);
                 if (new_inode) {
-                    nm_install_dentry_ops(dentry);
-                    return d_splice_alias(new_inode, dentry);
+                    nomount_hijack_dentry_ops(dentry, NULL);
+                    res = d_splice_alias(new_inode, dentry);
+                    if (!IS_ERR(res) && res) nomount_hijack_dentry_ops(res, NULL);
+                    return res;
                 }
             }
             if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
         }
     }
 
-    if (r_dir && r_dir->i_op && r_dir->i_op->lookup)
-        return r_dir->i_op->lookup(r_dir, dentry, flags);
+    if (r_dir && r_dir->i_op && r_dir->i_op->lookup) {
+        res = r_dir->i_op->lookup(r_dir, dentry, flags);
+        if (!IS_ERR(res) && res) nomount_hijack_dentry_ops(res, NULL);
+        return res;
+    }
 
     if (info && (info->flags & NM_FLAG_VIRTUAL_DIR)) {
-        nm_install_dentry_ops(dentry);
+        nomount_hijack_dentry_ops(dentry, NULL);
         d_add(dentry, NULL);
         return NULL;
     }
@@ -924,6 +936,29 @@ static inline void nomount_hijack_dir_ops(struct nomount_dir_node *dir_node, str
     }
 
     if (nm_iop || nm_fop) nm_debug("Successfully hijacked VFS ops for parent dir (ino: %lu)\n", inode->i_ino);
+}
+
+static void nomount_hijack_dentry_ops(struct dentry *dentry, struct nm_iop *nm_iop)
+{
+    if (!dentry) return;
+    spin_lock(&dentry->d_lock);
+    if (dentry->d_op == &nm_dops || (nm_iop != NULL && nm_iop->orig_dop && dentry->d_op == &nm_iop->fake_dop)) {
+        dentry->d_flags |= DCACHE_OP_REVALIDATE;
+        spin_unlock(&dentry->d_lock);
+        return;
+    }
+    if (dentry->d_op && nm_iop != NULL) {
+        if (!nm_iop->orig_dop) {
+            nm_iop->orig_dop = dentry->d_op;
+            nm_iop->fake_dop = *dentry->d_op;
+            nm_iop->fake_dop.d_revalidate = nm_d_revalidate;
+        }
+        dentry->d_op = &nm_iop->fake_dop;
+    } else {
+        dentry->d_op = &nm_dops;
+    }
+    dentry->d_flags |= DCACHE_OP_REVALIDATE;
+    spin_unlock(&dentry->d_lock);
 }
 
 #define NM_DEFINE_RCU_FREE(_name, _type, _cache) \
