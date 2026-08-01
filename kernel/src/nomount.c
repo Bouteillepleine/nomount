@@ -719,7 +719,7 @@ static int nm_xattr_get(const struct xattr_handler *handler, struct dentry *dent
     if (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops) {
         struct nm_inode_info *info = inode->i_private;
         if (unlikely(!info || !info->r_path.dentry)) return -ENODATA;
-        return vfs_getxattr(IDMAP_PATH(info->r_path) info->r_path.dentry, name, buffer, size);
+        return __vfs_getxattr(info->r_path.dentry, d_inode(info->r_path.dentry), name, buffer, size FLAGS_VAL);
     }
     return proxy->orig->get(proxy->orig, dentry, inode, name, buffer, size FLAGS_VAL);
 }
@@ -730,7 +730,7 @@ static int nm_xattr_set(const struct xattr_handler *handler, IDMAP_ARG struct de
     if (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops) {
         struct nm_inode_info *info = inode->i_private;
         if (unlikely(!info || !info->r_path.dentry)) return -ENODATA;
-        return vfs_setxattr(IDMAP_CALL info->r_path.dentry, name, buffer, size, flags);
+        return __vfs_setxattr(IDMAP_PATH(info->r_path) info->r_path.dentry, d_inode(info->r_path.dentry), name, buffer, size, flags);
     }
     return proxy->orig->set(proxy->orig, IDMAP_CALL dentry, inode, name, buffer, size, flags);
 }
