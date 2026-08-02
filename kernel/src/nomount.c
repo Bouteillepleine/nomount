@@ -195,7 +195,7 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
         inode->i_gid = GLOBAL_ROOT_GID;
         inode->i_op = &nm_dir_iops;
         inode->i_fop = &nm_dir_fops;
-    } else {
+    } else if (rule_info->r_path.dentry) {
         struct inode *real_inode = d_backing_inode(rule_info->r_path.dentry);
         inode->i_mode = real_inode->i_mode;
         inode->i_size = i_size_read(real_inode);
@@ -203,7 +203,7 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
         inode->i_uid = real_inode->i_uid;
         inode->i_gid = real_inode->i_gid;
         nm_sync_inode_times(inode, real_inode);
-       if (S_ISDIR(real_inode->i_mode)) {
+        if (S_ISDIR(real_inode->i_mode)) {
             inode->i_op = &nm_dir_iops;
             inode->i_fop = &nm_dir_fops;
         } else {
