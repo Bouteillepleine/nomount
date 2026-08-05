@@ -1057,10 +1057,7 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
         }
     }
 
-    idr_preload(GFP_KERNEL);
-    new_child->id = idr_alloc(&dir_node->children_idr, new_child, 0, 0, GFP_NOWAIT);
-    idr_preload_end();
-
+    new_child->id = idr_alloc(&dir_node->children_idr, new_child, 0, 0, GFP_KERNEL);
     if (new_child->id < 0) {
         kfree(new_child);
         return;
@@ -1534,10 +1531,7 @@ static int nomount_genl_add_uid(struct sk_buff *skb, struct genl_info *info)
         return -EEXIST;
 
     mutex_lock(&nomount_write_mutex);
-    idr_preload(GFP_KERNEL);
-    ret = idr_alloc(&nomount_uid_idr, (void *)1, uid, uid + 1, GFP_NOWAIT);
-    idr_preload_end();
-
+    ret = idr_alloc(&nomount_uid_idr, (void *)1, uid, uid + 1, GFP_KERNEL);
     if (ret >= 0) {
         static_branch_enable(&nomount_active_uids);
         nm_info("Successfully added blocked UID: %u\n", uid);
