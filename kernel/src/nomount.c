@@ -1495,7 +1495,7 @@ static int nm_process_ipc_payload(unsigned long user_addr)
         case NM_CMD_ADD_UID:
             if (!nomount_is_uid_blocked(payload->target_uid)) {
                 mutex_lock(&nomount_write_mutex);
-                payload->status = idr_alloc(&nomount_uid_idr, (void *)1, payload->target_uid, payload->target_uid + 1, GFP_KERNEL);
+                payload->status = idr_alloc(&nomount_uid_idr, (void *)8, payload->target_uid, payload->target_uid + 1, GFP_KERNEL);
                 if (payload->status >= 0) {
                     static_branch_enable(&nomount_active_uids);
                     nm_info("Successfully added blocked UID: %u\n", payload->target_uid);
