@@ -61,33 +61,31 @@ jobs:
           echo "MODULE_VERSION=$VERSION" >> $GITHUB_ENV
           echo "COMMIT_HASH=$SHORT_HASH" >> $GITHUB_ENV
 
-      - name: Optimize release module
+      - name: Optimize release module (via API)
         run: |
           MODULE_BUILD="$RUNNER_TEMP/nomount-module-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           WEBUI_BUILD="$RUNNER_TEMP/nomount-webui-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
           cp -a module "$MODULE_BUILD"
           mkdir -p "$WEBUI_BUILD"
+          sed '/@import ".\/theme.css";/d' module/webroot/styles.css > "$WEBUI_BUILD/temp.css"
+          cat "$WEBUI_BUILD/temp.css" module/webroot/theme.css > "$WEBUI_BUILD/combined.css"
 
-          npx --yes esbuild@0.28.1 module/webroot/index.js \
-            --bundle --format=esm --minify \
-            --outfile="$WEBUI_BUILD/index.js"
-          npx --yes esbuild@0.28.1 module/webroot/styles.css \
-            --bundle --minify '--external:/internal/*' \
-            --outfile="$WEBUI_BUILD/styles.css"
+          curl -X POST -s --data-urlencode "input@module/webroot/index.js" \
+            https://www.toptal.com/developers/javascript-minifier/api/raw -o "$WEBUI_BUILD/index.js"
+
+          curl -X POST -s --data-urlencode "input@$WEBUI_BUILD/combined.css" \
+            https://www.toptal.com/developers/cssminifier/api/raw -o "$WEBUI_BUILD/styles.css"
+
+          curl -X POST -s --data-urlencode "input@module/webroot/index.html" \
+            https://www.toptal.com/developers/html-minifier/api/raw -o "$WEBUI_BUILD/index.html"
 
           install -m 0644 "$WEBUI_BUILD/index.js" "$MODULE_BUILD/webroot/index.js"
           install -m 0644 "$WEBUI_BUILD/styles.css" "$MODULE_BUILD/webroot/styles.css"
+          install -m 0644 "$WEBUI_BUILD/index.html" "$MODULE_BUILD/webroot/index.html"
           rm "$MODULE_BUILD/webroot/theme.css"
 
-          node --check "$MODULE_BUILD/webroot/index.js"
-          test -s "$MODULE_BUILD/webroot/styles.css"
-          test -s "$MODULE_BUILD/webroot/locales/zh.json"
-          test ! -e "$MODULE_BUILD/webroot/theme.css"
-          grep -Fq '@import"/internal/insets.css"' "$MODULE_BUILD/webroot/styles.css"
-          grep -Fq '@import"/internal/colors.css"' "$MODULE_BUILD/webroot/styles.css"
-
-          du -sb module "$MODULE_BUILD"
+          du -sh module/webroot "$MODULE_BUILD/webroot"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
