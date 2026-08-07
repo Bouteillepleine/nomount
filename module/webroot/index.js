@@ -665,10 +665,10 @@ function renderNextAppBatch() {
 async function removeExclusion(uid, name) {
     showToast(translate('unblocking_name', { name }));
     try {
-        await exec(`${NM_BIN} unblock ${uid}`);
+        const unblockResult = await exec(`${NM_BIN} unblock ${uid}`);
+        if (unblockResult.errno !== 0) throw new Error(unblockResult.stderr || 'Failed to unblock UID');
         const remainingUids = parseUidList((await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`)).stdout).filter(u => u !== String(uid));
         await exec(buildWriteUidListCmd(remainingUids));
-        showToast(translate('blocked_saved'));
     } catch { showToast(translate('error_unblocking')); }
 
     await loadExclusions();
@@ -682,10 +682,11 @@ async function addExclusion(uid, name) {
     }
 
     try {
-        await exec(`${NM_BIN} block ${uidStr}`);
+        const blockResult = await exec(`${NM_BIN} block ${uidStr}`);
+        if (blockResult.errno !== 0) showToast(translate('blocked_saved'));
+        else showToast(alreadyBlocked ? translate('blocked_already') : translate('blocked', { name }));
         const currentUids = parseUidList((await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`)).stdout);
         if (!currentUids.includes(uidStr)) await exec(buildWriteUidListCmd([...currentUids, uidStr]));
-        showToast(translate('blocked_saved'));
     } catch { showToast(translate('error_blocking')); }
 
     await loadExclusions();
