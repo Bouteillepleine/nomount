@@ -75,25 +75,6 @@ static __always_inline bool nomount_get_rule_info(struct nomount_dir_node *dir_n
     return found;
 }
 
-static __always_inline struct nomount_rule *nomount_get_rule_locked(struct nomount_dir_node *dir_node, const char *name, size_t len, u32 hash)
-{
-    struct nomount_child_node *child;
-    struct nomount_rule *found = NULL;
-    int id;
-
-    rcu_read_lock();
-    idr_for_each_entry(&dir_node->children_idr, child, id) {
-        if (child->name_hash == hash && child->name_len == len && memcmp(child->name, name, len) == 0) {
-            if (child->rule && (child->rule->target_uid == 0 || child->rule->target_uid == current_uid().val)) {
-                found = child->rule;
-            }
-            break;
-        }
-    }
-    rcu_read_unlock();
-    return found;
-}
-
 struct nomount_proxy_ctx {
     struct dir_context ctx;
     struct dir_context *orig_ctx;
