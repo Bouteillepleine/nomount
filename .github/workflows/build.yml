@@ -2,7 +2,7 @@ name: build module
 
 on:
   push:
-    branches: master
+    branches: [ master, dev ]
     paths-ignore: 
       - '**.md'
       - 'kernel/**'
@@ -13,10 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
 
       - name: Setup zig
-        uses: mlugg/setup-zig@v2.2.1
+        uses: jetsung/setup-zig@v0.0.4
         with:
           version: master
 
@@ -54,7 +56,7 @@ jobs:
         run: |
           NAME=$(sed -n 's/^name=//p' module/module.prop | tr -d '\r' | tr -d ' ')
           VERSION=$(sed -n 's/^version=//p' module/module.prop | tr -d '\r' | tr -d ' ')
-          SHORT_HASH=$(echo "${{ github.sha }}" | cut -c1-7)
+          SHORT_HASH=$(git rev-parse --short HEAD)
           echo "MODULE_NAME=$NAME" >> $GITHUB_ENV
           echo "MODULE_VERSION=$VERSION" >> $GITHUB_ENV
           echo "COMMIT_HASH=$SHORT_HASH" >> $GITHUB_ENV
