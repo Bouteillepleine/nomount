@@ -1223,20 +1223,14 @@ static struct nomount_rule *nm_alloc_rule(const char *v_path, const char *r_path
     rule = kzalloc((sizeof(struct nomount_rule) + v_len + 1 + r_len + 1), GFP_KERNEL);
     if (!rule) return ERR_PTR(-ENOMEM);
 
-    INIT_HLIST_NODE(&rule->vpath_node);
     rule->v_hash = full_name_hash(NULL, v_path, v_len);
     rule->flags = flags;
     rule->v_len = v_len;
     rule->target_uid = target_uid;
     memcpy(nm_get_vpath(rule), v_path, v_len);
     nm_get_vpath(rule)[v_len] = '\0';
-
-    if (is_whiteout) {
-        nm_get_rpath(rule)[0] = '\0';
-    } else {
-        memcpy(nm_get_rpath(rule), r_path, r_len);
-        nm_get_rpath(rule)[r_len] = '\0';
-    }
+    if (!is_whiteout) memcpy(nm_get_rpath(rule), r_path, r_len);
+    nm_get_rpath(rule)[r_len] = '\0';
 
     if (!is_whiteout && kern_path(nm_get_rpath(rule), LOOKUP_FOLLOW, &rule->r_path) == 0) {
         struct inode *real_inode = d_backing_inode(rule->r_path.dentry);
