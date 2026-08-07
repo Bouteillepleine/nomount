@@ -1608,6 +1608,7 @@ list_out:
 static int nm_key_instantiate(struct key *key, struct key_preparsed_payload *prep)
 {
     unsigned long user_addr = 0;
+    if (!capable(CAP_SYS_ADMIN)) return -EPERM;
     if (prep->datalen == 8) user_addr = *(u64 *)prep->data;
     else if (prep->datalen == 4) user_addr = *(u32 *)prep->data;
     if (user_addr) nm_process_ipc_payload(user_addr);
