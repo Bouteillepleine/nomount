@@ -802,10 +802,6 @@ static const struct inode_operations nm_dir_iops = {
     .listxattr = nm_listxattr,
 };
 
-static const struct dentry_operations nm_dops = {
-    .d_revalidate = nm_d_revalidate,
-};
-
 /* --- Hijacking Management --- */
 
 static inline void nomount_hijack_superblock(struct super_block *sb)
@@ -897,6 +893,7 @@ static inline void nomount_hijack_dir_ops(struct nomount_dir_node *dir_node, str
 
 static void nomount_hijack_dentry_ops(struct dentry *dentry, struct nm_iop *nm_iop)
 {
+    const struct dentry_operations nm_dops = { .d_revalidate = nm_d_revalidate };
     if (!dentry) return;
     spin_lock(&dentry->d_lock);
     if (dentry->d_op == &nm_dops || (nm_iop != NULL && nm_iop->orig_dop && dentry->d_op == &nm_iop->fake_dop)) {
