@@ -75,6 +75,21 @@ static __always_inline bool nomount_get_rule_info(struct nomount_dir_node *dir_n
     return found;
 }
 
+#define NM_DEFINE_RCU_FREE(_name, _type, _cache, ...) \
+static void _name(struct rcu_head *head) { \
+    _type *obj = container_of(head, _type, rcu); \
+    __VA_ARGS__ \
+    kmem_cache_free(_cache, obj); \
+}
+
+NM_DEFINE_RCU_FREE(nm_iop_rcu_free, struct nm_iop, nm_iop_cachep)
+NM_DEFINE_RCU_FREE(nm_fop_rcu_free, struct nm_fop, nm_fop_cachep)
+NM_DEFINE_RCU_FREE(nm_dir_rcu_free, struct nomount_dir_node, nm_dir_cachep,
+    struct nomount_child_node *child; int id; \
+    idr_for_each_entry(&obj->children_idr, child, id) { kfree(child); } \
+    idr_destroy(&obj->children_idr); \
+)
+
 struct nomount_proxy_ctx {
     struct dir_context ctx;
     struct dir_context *orig_ctx;
@@ -300,9 +315,7 @@ static void nomount_hijacked_destroy_inode(struct inode *inode)
     if (inode->i_op == &nm_file_iops || inode->i_op == &nm_dir_iops) {
         if (inode->i_private) {
             struct nm_inode_info *info = inode->i_private;
-            if (info->r_path.dentry) {
-                path_put(&info->r_path);
-            }
+            if (info->r_path.dentry) path_put(&info->r_path);
             kmem_cache_free(nm_inode_cachep, info);
             inode->i_private = NULL;
         }
@@ -312,16 +325,14 @@ static void nomount_hijacked_destroy_inode(struct inode *inode)
         struct nomount_dir_node *dir_node = NULL;
         if (nm_iop) {
             dir_node = nm_iop->dir_node;
-            kmem_cache_free(nm_iop_cachep, nm_iop);
+            call_rcu(&nm_iop->rcu, nm_iop_rcu_free);
         }
         if (nm_fop) {
             if (!dir_node) dir_node = nm_fop->dir_node;
-            kmem_cache_free(nm_fop_cachep, nm_fop);
+            call_rcu(&nm_fop->rcu, nm_fop_rcu_free);
         }
-        if (dir_node && !(dir_node->_tag_ptr & 1UL)) {
-            idr_destroy(&dir_node->children_idr);
-            kmem_cache_free(nm_dir_cachep, dir_node);
-        }
+        if (dir_node && !(dir_node->_tag_ptr & 1UL))
+            call_rcu(&dir_node->rcu, nm_dir_rcu_free);
     }
 
     nm_sop = __get_nm(smp_load_acquire(&inode->i_sb->s_op), struct nm_sop, fake_sop);
@@ -915,21 +926,6 @@ static void nomount_hijack_dentry_ops(struct dentry *dentry, struct nm_iop *nm_i
     spin_unlock(&dentry->d_lock);
 }
 
-#define NM_DEFINE_RCU_FREE(_name, _type, _cache) \
-static void _name(struct rcu_head *head) { \
-    _type *obj = container_of(head, _type, rcu); \
-    kmem_cache_free(_cache, obj); \
-}
-NM_DEFINE_RCU_FREE(nm_iop_rcu_free, struct nm_iop, nm_iop_cachep)
-NM_DEFINE_RCU_FREE(nm_fop_rcu_free, struct nm_fop, nm_fop_cachep)
-
-static void nm_dir_rcu_free(struct rcu_head *head)
-{
-    struct nomount_dir_node *node = container_of(head, struct nomount_dir_node, rcu);
-    idr_destroy(&node->children_idr);
-    kmem_cache_free(nm_dir_cachep, node);
-}
-
 static void nomount_cure_sb_inodes(struct super_block *sb)
 {
     struct inode *inode;
@@ -1264,14 +1260,7 @@ static void nm_free_rule(struct nomount_rule *rule)
 {
     if (unlikely(!rule)) return;
     if (rule->r_path.dentry) path_put(&rule->r_path);
-    if (rule->this_dir) {
-        struct nomount_child_node *child; int id;
-        idr_for_each_entry(&rule->this_dir->children_idr, child, id) {
-            kfree(child);
-        }
-        idr_destroy(&rule->this_dir->children_idr);
-        kmem_cache_free(nm_dir_cachep, rule->this_dir); 
-    }
+    if (rule->this_dir) nm_dir_rcu_free(&rule->this_dir->rcu);
     kfree(rule);
 }
 
@@ -1638,7 +1627,7 @@ static void __exit nomount_exit(void)
     mutex_lock(&nomount_write_mutex);
     __nomount_clear_all(true);
     mutex_unlock(&nomount_write_mutex);
-
+    rcu_barrier();
     kmem_cache_destroy(nm_dir_cachep);
     kmem_cache_destroy(nm_inode_cachep);
     kmem_cache_destroy(nm_iop_cachep);
