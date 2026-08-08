@@ -935,7 +935,6 @@ static void nomount_cure_sb_inodes(struct super_block *sb)
         if (!nm_iop && !nm_fop) continue;
 
         dir_node = NULL;
-        spin_lock(&inode->i_lock);
         if (nm_iop) {
             dir_node = nm_iop->dir_node;
             smp_store_release(&inode->i_op, nm_iop->orig_iop);
@@ -946,11 +945,8 @@ static void nomount_cure_sb_inodes(struct super_block *sb)
             smp_store_release(&inode->i_fop, nm_fop->orig_fop);
             call_rcu(&nm_fop->rcu, nm_fop_rcu_free);
         }
-        spin_unlock(&inode->i_lock);
-
-        if (dir_node && !dir_node->owner_rule) {
+        if (dir_node && !(dir_node->_tag_ptr & 1UL))
             call_rcu(&dir_node->rcu, nm_dir_rcu_free);
-        }
     }
     spin_unlock(&sb->s_inode_list_lock);
 }
