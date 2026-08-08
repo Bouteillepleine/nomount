@@ -44,16 +44,13 @@ static __always_inline struct nomount_dir_node *nomount_get_dir_node(struct inod
     return NULL;
 }
 
-static __always_inline bool nomount_get_rule_info(struct nomount_dir_node *dir_node, const char *name, size_t len, u32 hash, struct nm_rule_info *rule_info)
+static __always_inline bool nomount_get_rule_info(struct nomount_dir_node *dir_node, const char *name, size_t len, u32 hash, struct nm_rule_info *rule_info, bool get_path)
 {
     struct nomount_child_node *child;
     bool found = false;
     int id;
 
     if (unlikely(!dir_node)) return false;
-    rule_info->r_path.dentry = NULL;
-    rule_info->r_path.mnt = NULL;
-
     rcu_read_lock();
     idr_for_each_entry(&dir_node->children_idr, child, id) {
         if (child->name_hash == hash && child->name_len == len && memcmp(child->name, name, len) == 0) {
@@ -62,9 +59,12 @@ static __always_inline bool nomount_get_rule_info(struct nomount_dir_node *dir_n
                 rule_info->flags = rule->flags;
                 rule_info->v_ino = rule->v_ino;
                 rule_info->this_dir = rule->this_dir;
-                if (rule->r_path.dentry) {
+                if (get_path && rule->r_path.dentry) {
                     rule_info->r_path = rule->r_path;
                     path_get(&rule_info->r_path);
+                } else {
+                    rule_info->r_path.dentry = NULL;
+                    rule_info->r_path.mnt = NULL;
                 }
                 found = true;
             }
@@ -236,7 +236,7 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     if (unlikely(!nm_iop || !nm_iop->dir_node))
         goto do_real_lookup;
 
-    if (nomount_get_rule_info(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len), &rule_info)) {
+    if (nomount_get_rule_info(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len), &rule_info, true)) {
         if (nomount_is_uid_blocked(current_uid().val)) {
             if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
             if (nm_iop->orig_iop->lookup) {
@@ -640,7 +640,7 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
 
     if (info && info->dir_node) {
         u32 v_hash = full_name_hash(NULL, name, len);
-        if (nomount_get_rule_info(info->dir_node, name, len, v_hash, &rule_info)) {
+        if (nomount_get_rule_info(info->dir_node, name, len, v_hash, &rule_info, true)) {
             if (rule_info.flags & NM_FLAG_WHITEOUT) {
                 nomount_hijack_dentry_ops(dentry, NULL);
                 d_add(dentry, NULL);
@@ -705,50 +705,45 @@ static int nm_xattr_set(const struct xattr_handler *handler, IDMAP_ARG struct de
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
-static int nm_d_revalidate(struct inode *dir, const struct qstr *name, struct dentry *dentry, unsigned int flags)
+static int nm_d_revalidate(struct inode *inode, const struct qstr *name, struct dentry *dentry, unsigned int flags)
 #else
 static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
 #endif
 {
-    struct inode *parent_dir;
+    struct inode *parent_inode;
     struct nm_iop *nm_iop;
-    struct nomount_dir_node *pdir = NULL;
+    struct nomount_dir_node *parent_dir = NULL;
     struct nm_rule_info rule_info;
-    u32 hash;
     bool injected;
-
-    if (flags & LOOKUP_RCU)
-        return -ECHILD;
+    u32 hash;
 
     injected = dentry->d_inode &&
-               (dentry->d_inode->i_op == &nm_file_iops ||
-                 dentry->d_inode->i_op == &nm_dir_iops);
+               (dentry->d_inode->i_op == &nm_file_iops || dentry->d_inode->i_op == &nm_dir_iops);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
-    parent_dir = dir;
+    parent_inode = inode;
 #else
-    parent_dir = d_inode(dentry->d_parent);
+    parent_inode = d_inode(READ_ONCE(dentry->d_parent));
 #endif
-    if (!parent_dir) return 1;
+    if (!parent_inode) return 1;
 
-    nm_iop = __get_nm(smp_load_acquire(&parent_dir->i_op), struct nm_iop, fake_iop);
+    nm_iop = __get_nm(smp_load_acquire(&parent_inode->i_op), struct nm_iop, fake_iop);
     if (nm_iop) {
-        pdir = nm_iop->dir_node;
-    } else if (parent_dir->i_op == &nm_dir_iops) {
-        struct nm_inode_info *pinfo = parent_dir->i_private;
-        if (pinfo) pdir = pinfo->dir_node;
+        parent_dir = nm_iop->dir_node;
+    } else if (parent_inode->i_op == &nm_dir_iops) { 
+        struct nm_inode_info *parent_info = parent_inode->i_private;
+        if (parent_info) parent_dir = parent_info->dir_node;
     }
-    if (!pdir) return injected ? 0 : 1;
+    if (!parent_dir) return injected ? 0 : 1;
 
     hash = full_name_hash(NULL, dentry->d_name.name, dentry->d_name.len);
-    if (nomount_get_rule_info(pdir, dentry->d_name.name, dentry->d_name.len, hash, &rule_info)) {
-        if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
+    if (nomount_get_rule_info(parent_dir, dentry->d_name.name, dentry->d_name.len, hash, &rule_info, false)) {
         if (rule_info.flags & NM_FLAG_WHITEOUT) return d_is_negative(dentry) ? 1 : 0;
         if (nomount_is_uid_blocked(current_uid().val)) return injected ? 0 : 1;
         return injected ? 1 : 0;
     }
 
-    return 0;
+    return injected ? 0 : 1;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
