@@ -1032,10 +1032,7 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
         }
     }
 
-    idr_preload(GFP_KERNEL);
-    new_child->id = idr_alloc(&dir_node->children_idr, new_child, 0, 0, GFP_NOWAIT);
-    idr_preload_end();
-
+    new_child->id = idr_alloc(&dir_node->children_idr, new_child, 0, 0, GFP_KERNEL);
     if (new_child->id < 0) {
         kfree(new_child);
         return;
