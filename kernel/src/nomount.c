@@ -609,7 +609,7 @@ static int nm_dir_iterate_dir(struct file *file, struct dir_context *ctx)
         return 0;
     }
 
-    if (real_file && real_file->f_op->iterate_shared) {
+    if (real_file) {
         struct nomount_proxy_ctx proxy_ctx = {
             .ctx.actor = nomount_actor_proxy, .ctx.pos = ctx->pos,
             .orig_ctx = ctx, .dir_node = dir_node, .emitted = 0
