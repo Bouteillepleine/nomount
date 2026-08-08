@@ -1079,20 +1079,14 @@ static int nomount_generate_virtual_topology(struct nomount_rule *target_rule)
     struct nomount_dir_node *dir_node;
     struct hlist_node *tmp;
     struct inode *v_inode;
-    struct dentry *dentry;
     struct path p_path;
-    struct qstr qname;
-    bool found_virtual;
-    size_t child_len, irule_size;
+    size_t child_len;
     int i, err = 0;
     u32 h_parent;
     HLIST_HEAD(pending_list);
 
     while (p_len > 1) {
-        for (i = p_len - 1; i >= 0; i--) {
-            if (v_path[i] == '/') break;
-        }
-
+        for (i = p_len - 1; i >= 0; i--) { if (v_path[i] == '/') break; }
         parent_len = (i == 0) ? 1 : i;
         child_name = v_path + i + 1;
         child_len = p_len - i - 1;
@@ -1100,24 +1094,16 @@ static int nomount_generate_virtual_topology(struct nomount_rule *target_rule)
         orig_v_path = v_path[i];
         if (i > 0) v_path[i] = '\0';
 
-        found_virtual = false;
         hash_for_each_possible(nomount_rules_ht, ex, vpath_node, h_parent) {
             if (ex->v_len == parent_len && memcmp(nm_get_vpath(ex), v_path, parent_len) == 0) {
-                dir_node = ex->this_dir;
-                if (!dir_node) {
-                    dir_node = __nomount_alloc_dir_node(NULL);
-                    dir_node->_tag_ptr = (unsigned long)ex | 1UL;
-                    ex->this_dir = dir_node;
-                }
+                dir_node = ex->this_dir ? ex->this_dir : __nomount_alloc_dir_node(NULL);
+                if (unlikely(!dir_node)) { err = -ENOMEM; goto loop_end; }
+                dir_node->_tag_ptr = (unsigned long)ex | 1UL;
+                if (!ex->this_dir) ex->this_dir = dir_node;
                 __nomount_inject_child_locked(dir_node, current_rule, child_name, child_len);
-                found_virtual = true;
-                break;
+                if (i > 0) v_path[i] = orig_v_path;
+                goto success_break;
             }
-        }
-
-        if (found_virtual) {
-            if (i > 0) v_path[i] = orig_v_path; 
-            break;
         }
 
         lookup_path = (parent_len == 1) ? "/" : v_path;
@@ -1126,54 +1112,62 @@ static int nomount_generate_virtual_topology(struct nomount_rule *target_rule)
             dir_node = nomount_get_dir_node(v_inode);
             if (!dir_node) dir_node = __nomount_alloc_dir_node(v_inode);
             if (likely(dir_node)) {
-                nomount_hijack_dir_ops(dir_node, v_inode);
-                nomount_hijack_superblock(p_path.dentry->d_sb);
-
-                qname.name = child_name;
-                qname.len = child_len;
-                qname.hash = full_name_hash(p_path.dentry, child_name, child_len);
+                struct dentry *dentry;
+                struct qstr qname = {
+                    .name = child_name, .len = child_len,
+                    .hash = full_name_hash(p_path.dentry, child_name, child_len),
+                };                
                 if (p_path.dentry->d_flags & DCACHE_OP_HASH)
                     p_path.dentry->d_op->d_hash(p_path.dentry, &qname);
 
+                nomount_hijack_dir_ops(dir_node, v_inode);
+                nomount_hijack_superblock(p_path.dentry->d_sb);
                 dentry = d_lookup(p_path.dentry, &qname);
-                if (dentry) {
-                    d_drop(dentry); 
-                    dput(dentry);
-                }
+                if (dentry) { d_drop(dentry); dput(dentry); }
                 __nomount_inject_child_locked(dir_node, current_rule, child_name, child_len);
+            } else {
+                err = -ENOMEM;
             }
             path_put(&p_path);
-            
-            if (i > 0) v_path[i] = orig_v_path; 
-            break;
+
+            if (i > 0) v_path[i] = orig_v_path;
+            if (err) break;
+            goto success_break;
         }
 
-        irule_size = sizeof(struct nomount_rule) + parent_len + 1 + 2; 
-        irule = kzalloc(irule_size, GFP_KERNEL);
-        if (!irule) {
-            err = -ENOMEM;
-            if (i > 0) v_path[i] = orig_v_path; 
-            break;
-        }
+        irule = kzalloc(sizeof(struct nomount_rule) + parent_len + 1 + 2, GFP_KERNEL);
+        if (!irule) { err = -ENOMEM; goto loop_end; }
 
         irule->v_len = parent_len;
         irule->v_hash = h_parent;
         irule->flags = NM_FLAG_IS_DIR | NM_FLAG_VIRTUAL_DIR;
         irule->v_ino = (unsigned long)h_parent;
-        irule->target_uid = 0;
-
         memcpy(nm_get_vpath(irule), v_path, parent_len);
         nm_get_vpath(irule)[parent_len] = '\0';
         nm_get_rpath(irule)[0] = '\0';
 
         dir_node = __nomount_alloc_dir_node(NULL);
-        dir_node->_tag_ptr = (unsigned long)irule | 1UL;
-        irule->this_dir = dir_node;
-        __nomount_inject_child_locked(dir_node, current_rule, child_name, child_len);
+        if (likely(dir_node)) {
+            dir_node->_tag_ptr = (unsigned long)irule | 1UL;
+            irule->this_dir = dir_node;
+            __nomount_inject_child_locked(dir_node, current_rule, child_name, child_len);
+        } else {
+            kfree(irule);
+            err = -ENOMEM;
+            goto loop_end;
+        }
+
         hlist_add_head(&irule->vpath_node, &pending_list);
         current_rule = irule;
+
+loop_end:
         if (i > 0) v_path[i] = orig_v_path;
+        if (err) break;
         p_len = i; 
+        continue;
+
+success_break:
+        break;
     }
 
     if (likely(err == 0)) {
