@@ -868,11 +868,9 @@ static inline void nomount_hijack_dir_ops(struct nomount_dir_node *dir_node, str
             nm_iop->orig_iop = inode->i_op;
             nm_iop->signature = NOMOUNT_MAGIC_SIG;
             nm_iop->dir_node = dir_node;
-            nm_iop->had_private_flag = (inode->i_flags & S_PRIVATE) != 0;
 
             if (nm_iop->orig_iop->lookup) nm_iop->fake_iop.lookup = nomount_hijacked_lookup;
             smp_store_release(&inode->i_op, &nm_iop->fake_iop);
-            inode->i_flags |= S_PRIVATE;
         }
     }
 
@@ -941,7 +939,6 @@ static void nomount_cure_sb_inodes(struct super_block *sb)
         if (nm_iop) {
             dir_node = nm_iop->dir_node;
             smp_store_release(&inode->i_op, nm_iop->orig_iop);
-            if (!nm_iop->had_private_flag) inode->i_flags &= ~S_PRIVATE;
             call_rcu(&nm_iop->rcu, nm_iop_rcu_free);
         }
         if (nm_fop) {

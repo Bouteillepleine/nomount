@@ -49,7 +49,6 @@ struct nm_iop {
     const struct dentry_operations *orig_dop;
     u64 signature;
     struct nomount_dir_node *dir_node;
-    bool had_private_flag;
     struct rcu_head rcu;
 };
 
