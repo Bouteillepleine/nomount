@@ -276,12 +276,4 @@ static inline int nm_call_iterate(struct file *file, struct dir_context *ctx, co
     return -ENOTDIR;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
-    #define nm_init_private_list(inode) /* Nothing */
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
-    #define nm_init_private_list(inode) INIT_LIST_HEAD(&(inode)->i_data.i_private_list);
-#else
-    #define nm_init_private_list(inode) INIT_LIST_HEAD(&(inode)->i_data.private_list);
-#endif
-
 #endif /* _LINUX_NOMOUNT_H */

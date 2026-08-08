@@ -218,7 +218,6 @@ static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, st
     inode->i_flags |= S_PRIVATE | S_NOATIME | S_NOCMTIME | S_NOSEC;
     inode->i_opflags |= IOP_XATTR;
     if (!S_ISLNK(inode->i_mode)) inode->i_opflags |= IOP_NOFOLLOW;
-    nm_init_private_list(inode);
 
     return inode;
 }
