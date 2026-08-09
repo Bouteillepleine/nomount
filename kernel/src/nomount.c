@@ -1359,70 +1359,54 @@ static int nm_process_ipc_payload(unsigned long user_addr)
             break;
 
         case NM_CMD_ADD_RULE:
-            v_ptr = payload->buffer; r_ptr = payload->buffer + payload->v_len + 1;
-            payload->status = __nomount_add_rule(v_ptr, r_ptr, payload->v_len, payload->r_len, payload->flags, payload->target_uid);
+        case NM_CMD_ADD_RULE_BATCH:
+            if (payload->data_size > 0) {
+                while (payload->arg1 + 12 <= payload->data_size) {
+                    payload->flags      = get_unaligned((const u32 *)(payload->buffer + payload->arg1));
+                    payload->target_uid = get_unaligned((const u32 *)(payload->buffer + payload->arg1 + 4));
+                    payload->v_len      = get_unaligned((const u16 *)(payload->buffer + payload->arg1 + 8));
+                    payload->r_len      = get_unaligned((const u16 *)(payload->buffer + payload->arg1 + 10));
+                    payload->arg1 += 12;
+                    if (payload->arg1 + payload->v_len + payload->r_len > payload->data_size) break;
+                    if (unlikely(payload->v_len >= PATH_MAX || payload->r_len >= PATH_MAX)) break;
+
+                    v_ptr = (char *)payload->buffer + payload->arg1; payload->arg1 += payload->v_len;
+                    r_ptr = (char *)payload->buffer + payload->arg1; payload->arg1 += payload->r_len;
+                    payload->status = __nomount_add_rule(v_ptr, r_ptr, payload->v_len, payload->r_len, payload->flags, payload->target_uid);
+                }
+            } else {
+                v_ptr = payload->buffer; r_ptr = payload->buffer + payload->v_len + 1;
+                payload->status = __nomount_add_rule(v_ptr, r_ptr, payload->v_len, payload->r_len, payload->flags, payload->target_uid);
+            }
             break;
 
-        case NM_CMD_ADD_RULE_BATCH: {
-            const char *data = payload->buffer;
-            int len = payload->data_size, pos = 0;
-
-            while (pos + 12 <= len) {
-                u32 flags      = get_unaligned((const u32 *)(data + pos));
-                u32 target_uid = get_unaligned((const u32 *)(data + pos + 4));
-                u16 vp_len     = get_unaligned((const u16 *)(data + pos + 8));
-                u16 rp_len     = get_unaligned((const u16 *)(data + pos + 10));
-                pos += 12;
-                if (pos + vp_len + rp_len > len) break;
-                if (unlikely(vp_len >= PATH_MAX || rp_len >= PATH_MAX)) break;
-
-                v_ptr = (char *)data + pos; pos += vp_len;
-                r_ptr = (char *)data + pos; pos += rp_len;
-                __nomount_add_rule(v_ptr, r_ptr, vp_len, rp_len, flags, target_uid);
+        case NM_CMD_DEL_RULE: {
+            HLIST_HEAD(r_victims);    
+            mutex_lock(&nomount_write_mutex);
+            if (payload->data_size > 0) {
+                while (payload->arg1 + 6 <= payload->data_size) {
+                    payload->target_uid = get_unaligned((const u32 *)(payload->buffer + payload->arg1));
+                    payload->v_len = get_unaligned((const u16 *)(payload->buffer + payload->arg1 + 4));
+                    payload->arg1 += 6;
+                    if (payload->arg1 + payload->v_len > payload->data_size) break;
+                    __nomount_del_rule(payload->buffer + payload->arg1, payload->v_len, payload->target_uid, &r_victims);
+                    payload->arg1 += payload->v_len;
+                }
+            } else {
+                __nomount_del_rule(payload->buffer, payload->v_len, payload->target_uid, &r_victims);
+            }
+            mutex_unlock(&nomount_write_mutex);
+            if (!hlist_empty(&r_victims)) {
+                struct nomount_rule *rule; struct hlist_node *tmp;
+                synchronize_rcu();
+                hlist_for_each_entry_safe(rule, tmp, &r_victims, vpath_node) {
+                    nm_free_rule(rule);
+                }
+            } else {
+                payload->status = -ENOENT;
             }
             break;
         }
-
-        case NM_CMD_DEL_RULE:
-            if (payload->data_size > 0) {
-                HLIST_HEAD(r_victims);
-                int pos = 0;
-                const char *data = payload->buffer;
-                mutex_lock(&nomount_write_mutex);
-                while (pos + 6 <= payload->data_size) {
-                    u32 target_uid = get_unaligned((const u32 *)(data + pos));
-                    u16 vp_len     = get_unaligned((const u16 *)(data + pos + 4));
-                    pos += 6; 
-                    if (pos + vp_len > payload->data_size) break;
-                    __nomount_del_rule(data + pos, vp_len, target_uid, &r_victims);
-                    pos += vp_len;
-                }
-                mutex_unlock(&nomount_write_mutex);
-                if (!hlist_empty(&r_victims)) {
-                    struct nomount_rule *rule; struct hlist_node *tmp;
-                    synchronize_rcu();
-                    hlist_for_each_entry_safe(rule, tmp, &r_victims, vpath_node) {
-                        nm_free_rule(rule);
-                    }
-                } else {
-                    payload->status = -ENOENT;
-                }
-            } else {
-                HLIST_HEAD(r_victims);
-                mutex_lock(&nomount_write_mutex);
-                __nomount_del_rule(payload->buffer, payload->v_len, payload->target_uid, &r_victims);
-                mutex_unlock(&nomount_write_mutex);
-                if (!hlist_empty(&r_victims)) {
-                    struct nomount_rule *rule; struct hlist_node *tmp;
-                    synchronize_rcu();
-                    hlist_for_each_entry_safe(rule, tmp, &r_victims, vpath_node) {
-                        nm_free_rule(rule);
-                    }
-                } else {
-                    payload->status = -ENOENT;
-                }
-            }
-            break;
 
         case NM_CMD_CLEAR_ALL:
             mutex_lock(&nomount_write_mutex);
@@ -1434,11 +1418,9 @@ static int nm_process_ipc_payload(unsigned long user_addr)
         case NM_CMD_ADD_UID:
             if (!nomount_is_uid_blocked(payload->target_uid)) {
                 mutex_lock(&nomount_write_mutex);
-                payload->status = idr_alloc(&nomount_uid_idr, (void *)8, payload->target_uid, payload->target_uid + 1, GFP_KERNEL);
-                if (payload->status >= 0) {
+                if (idr_alloc(&nomount_uid_idr, (void *)8, payload->target_uid, payload->target_uid + 1, GFP_KERNEL) >= 0) {
                     static_branch_enable(&nomount_active_uids);
                     nm_info("Successfully added blocked UID: %u\n", payload->target_uid);
-                    payload->status = 0;
                 } else {
                     payload->status = -ENOMEM;
                 }
@@ -1450,15 +1432,10 @@ static int nm_process_ipc_payload(unsigned long user_addr)
 
         case NM_CMD_DEL_UID:
             mutex_lock(&nomount_write_mutex);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
-            if (idr_remove(&nomount_uid_idr, payload->target_uid)) {
-#else
             if (idr_find(&nomount_uid_idr, payload->target_uid)) {
                 idr_remove(&nomount_uid_idr, payload->target_uid);
-#endif
                 if (idr_is_empty(&nomount_uid_idr)) static_branch_disable(&nomount_active_uids);
                 nm_info("Successfully removed blocked UID: %u\n", payload->target_uid);
-                payload->status = 0;
             } else {
                 payload->status = -ENOENT;
             }
@@ -1468,69 +1445,55 @@ static int nm_process_ipc_payload(unsigned long user_addr)
         case NM_CMD_GET_LIST: {
             struct nomount_rule *rule;
             int bkt = payload->arg1 >> 16;
-            int skip_nodes = payload->arg1 & 0xFFFF;
             int node_idx = 0;
-            u32 pos = 0;
+            payload->data_size = 0;
 
             rcu_read_lock();
             for (; bkt < (1 << NOMOUNT_HASH_BITS); bkt++) {
                 node_idx = 0;
                 hlist_for_each_entry_rcu(rule, &nomount_rules_ht[bkt], vpath_node) {
-                    u16 r_len = rule->flags & NM_FLAG_WHITEOUT ? 0 : strlen(nm_get_rpath(rule));
-                    if (node_idx < skip_nodes) { node_idx++; continue; }
-                    if (pos + 12 + rule->v_len + r_len > sizeof(payload->buffer)) {
-                        goto list_out;
-                    }
+                    payload->r_len = rule->flags & NM_FLAG_WHITEOUT ? 0 : strlen(nm_get_rpath(rule));
+                    if (node_idx < (payload->arg1 & 0xFFFF)) { node_idx++; continue; }
+                    if (payload->data_size + 12 + rule->v_len + payload->r_len > sizeof(payload->buffer)) goto list_out;
 
-                    put_unaligned(rule->flags, (u32 *)(payload->buffer + pos));
-                    put_unaligned(rule->target_uid, (u32 *)(payload->buffer + pos + 4));
-                    put_unaligned(rule->v_len, (u16 *)(payload->buffer + pos + 8));
-                    put_unaligned(r_len, (u16 *)(payload->buffer + pos + 10));
-                    pos += 12;
+                    put_unaligned(rule->flags, (u32 *)(payload->buffer + payload->data_size));
+                    put_unaligned(rule->target_uid, (u32 *)(payload->buffer + payload->data_size + 4));
+                    put_unaligned(rule->v_len, (u16 *)(payload->buffer + payload->data_size + 8));
+                    put_unaligned(payload->r_len, (u16 *)(payload->buffer + payload->data_size + 10));
+                    payload->data_size += 12;
 
-                    memcpy(payload->buffer + pos, nm_get_vpath(rule), rule->v_len);
-                    pos += rule->v_len;
-                    if (r_len > 0) {
-                        memcpy(payload->buffer + pos, nm_get_rpath(rule), r_len);
-                        pos += r_len;
-                    }
+                    memcpy(payload->buffer + payload->data_size, nm_get_vpath(rule), rule->v_len);
+                    payload->data_size += rule->v_len;
+                    if (payload->r_len > 0) memcpy(payload->buffer + payload->data_size, nm_get_rpath(rule), payload->r_len);
+                    payload->data_size += payload->r_len;
                     node_idx++;
                 }
-                skip_nodes = 0;
+                payload->arg1 &= 0xFFFF0000;
             }
 list_out:
             rcu_read_unlock();
             payload->arg1 = (bkt << 16) | node_idx;
-            payload->data_size = pos;
             requires_zeroing = false;
             break;
         }
 
-        case NM_CMD_GET_UIDS: {
-            int id = payload->arg1;
-            void *ptr;
-            u32 pos = 0;
-
+        case NM_CMD_GET_UIDS:
+            payload->data_size = 0;
             if (!static_branch_unlikely(&nomount_active_uids)) {
-                payload->data_size = 0;
                 requires_zeroing = false;
                 break;
             }
 
             rcu_read_lock();
-            while ((ptr = idr_get_next(&nomount_uid_idr, &id)) != NULL) {
-                if (pos + 4 > sizeof(payload->buffer)) break;
-                put_unaligned(id, (u32 *)(payload->buffer + pos));
-                pos += 4;
-                id++;
+            while (idr_get_next(&nomount_uid_idr, &payload->arg1) != NULL) {
+                if (payload->data_size + 4 > sizeof(payload->buffer)) break;
+                put_unaligned(payload->arg1, (u32 *)(payload->buffer + payload->data_size));
+                payload->data_size += 4;
+                payload->arg1++;
             }
             rcu_read_unlock();
-
-            payload->arg1 = id;
-            payload->data_size = pos;
             requires_zeroing = false;
             break;
-        }
     }
 
     if (requires_zeroing) {
