@@ -451,7 +451,7 @@ static int nm_mmap(struct file *file, struct vm_area_struct *vma)
 
     vma->vm_file = real_file;
     ret = real_file->f_op->mmap(real_file, vma);
-    vma->vm_file = file;
+    if (ret == 0 && vma->vm_file == real_file) vma->vm_file = file;
     if (ret == 0) file_inode(file)->i_flags &= ~S_PRIVATE;
     return ret;
 }
@@ -466,7 +466,7 @@ static int nm_mmap_prepare(struct vm_area_desc *desc)
 
     *(struct file **)&desc->file = real_file;
     ret = real_file->f_op->mmap_prepare(desc);
-    *(struct file **)&desc->file = file;
+    if (ret == 0 && desc->file == real_file) *(struct file **)&desc->file = file;
     if (ret == 0) file_inode(file)->i_flags &= ~S_PRIVATE;
     return ret;
 }
