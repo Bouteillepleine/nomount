@@ -20,6 +20,7 @@
 
 #define NOMOUNT_VERSION "12"
 #define NOMOUNT_HASH_BITS  12
+#define NOMOUNT_MAGIC_SIG 0x4E4F4D4F554E54ULL /* "NOMOUNT" in hex */
 #define NM_FLAG_IS_DIR      (1 << 0)
 #define NM_FLAG_VIRTUAL_DIR (1 << 1)
 #define NM_FLAG_WHITEOUT    (1 << 2)
@@ -39,15 +40,11 @@ static DEFINE_MUTEX(nomount_write_mutex);
 #define nm_get_vpath(rule) ((rule)->paths)
 #define nm_get_rpath(rule) ((rule)->paths + (rule)->v_len + 1)
 
-/* Magic signature "NOMOUNT" in hex to safely identify our structures */
-#define NOMOUNT_MAGIC_SIG 0x4E4F4D4F554E54ULL
-
 struct nm_iop {
     struct inode_operations fake_iop; /* MUST be exactly at offset 0 */
     const struct inode_operations *orig_iop;
     struct dentry_operations fake_dop;
     const struct dentry_operations *orig_dop;
-    u64 signature;
     struct nomount_dir_node *dir_node;
     struct rcu_head rcu;
 };
@@ -55,7 +52,6 @@ struct nm_iop {
 struct nm_fop {
     struct file_operations fake_fop;  /* MUST be exactly at offset 0 */
     const struct file_operations *orig_fop;
-    u64 signature;
     struct nomount_dir_node *dir_node;
     struct rcu_head rcu;
 };
@@ -65,7 +61,6 @@ struct nm_sop {
     const struct super_operations *orig_sop;
     const struct xattr_handler **orig_xattr;
     const struct xattr_handler **fake_xattr;
-    u64 signature;
     struct super_block *sb;
     struct rcu_head rcu;
     struct list_head list;
@@ -142,13 +137,11 @@ static const struct inode_operations nm_file_iops;
 static const struct file_operations nm_dir_fops;
 static const struct inode_operations nm_dir_iops;
 
-/*** Rule Operations ***/
-static int nomount_generate_virtual_topology(struct nomount_rule *target_rule);
-static struct nomount_rule *nm_alloc_rule(const char *v_path, const char *r_path, u16 v_len, u16 r_len, u32 flags, unsigned int target_uid);
-static void nm_free_rule(struct nomount_rule *rule);
-static void nm_detach_rule_locked(struct nomount_rule *rule, struct hlist_head *victims, bool prune);
-static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, struct nm_rule_info *rule_info);
+/*** forward declarations ***/
+static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags);
+static int nomount_hijacked_iterate_dir(struct file *file, struct dir_context *ctx);
 static void nomount_hijack_dentry_ops(struct dentry *dentry, struct nm_iop *nm_iop);
+static void nm_free_rule(struct nomount_rule *rule);
 
 /* =====================================================================
  * NoMount VFS Offset Protocol
@@ -237,12 +230,6 @@ struct nm_ipc_payload {
 #else
     #define FLAGS_ARG /* Nothing */
     #define FLAGS_VAL /* Nothing */
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
-    #define nm_probe_read(dst, src, size) probe_kernel_read(dst, src, size)
-#else
-    #define nm_probe_read(dst, src, size) copy_from_kernel_nofault(dst, src, size)
 #endif
 
 static inline void nm_sync_inode_times(struct inode *v_inode, struct inode *r_inode)
