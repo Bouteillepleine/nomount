@@ -108,7 +108,7 @@ static NM_ACTOR_RET nomount_actor_proxy(struct dir_context *ctx, const char *nam
 
     proxy->emitted++;
     if (!proxy->dir_node) goto do_real_actor;
-    hash = full_name_hash(NULL, name, namelen);
+    hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, namelen);
     if (!(proxy->dir_node->bloom_mask & (1ULL << (hash & 63))))
         goto do_real_actor;
 
@@ -235,7 +235,7 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     if (unlikely(!nm_iop || !nm_iop->dir_node))
         goto do_real_lookup;
 
-    if (nomount_get_rule_info(nm_iop->dir_node, name, len, full_name_hash(NULL, name, len), &rule_info, true)) {
+    if (nomount_get_rule_info(nm_iop->dir_node, name, len, full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, len), &rule_info, true)) {
         if (nomount_is_uid_blocked(current_uid().val)) {
             if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
             if (nm_iop->orig_iop->lookup) {
@@ -638,7 +638,7 @@ static struct dentry *nm_dir_lookup(struct inode *dir, struct dentry *dentry, un
     struct dentry *res;
 
     if (info && info->dir_node) {
-        u32 v_hash = full_name_hash(NULL, name, len);
+        u32 v_hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, len);
         if (nomount_get_rule_info(info->dir_node, name, len, v_hash, &rule_info, true)) {
             if (rule_info.flags & NM_FLAG_WHITEOUT) {
                 nomount_hijack_dentry_ops(dentry, NULL);
@@ -735,7 +735,7 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
     }
     if (!parent_dir) return injected ? 0 : 1;
 
-    hash = full_name_hash(NULL, dentry->d_name.name, dentry->d_name.len);
+    hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, dentry->d_name.name, dentry->d_name.len);
     if (nomount_get_rule_info(parent_dir, dentry->d_name.name, dentry->d_name.len, hash, &rule_info, false)) {
         if (rule_info.flags & NM_FLAG_WHITEOUT) return d_is_negative(dentry) ? 1 : 0;
         if (nomount_is_uid_blocked(current_uid().val)) return injected ? 0 : 1;
@@ -1001,7 +1001,7 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
     if (unlikely(!new_child)) return;
 
     new_child->fake_ino = rule->v_hash;
-    new_child->name_hash = full_name_hash(NULL, name, name_len);
+    new_child->name_hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, name_len);
     new_child->d_type = (rule->flags & NM_FLAG_IS_DIR) ? DT_DIR : DT_REG;
     new_child->flags = rule->flags;
     new_child->name_len = name_len;
@@ -1074,7 +1074,7 @@ static int nomount_generate_virtual_topology(struct nomount_rule *target_rule)
         parent_len = (i == 0) ? 1 : i;
         child_name = v_path + i + 1;
         child_len = p_len - i - 1;
-        h_parent = full_name_hash(NULL, v_path, parent_len);
+        h_parent = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, v_path, parent_len);
         orig_v_path = v_path[i];
         if (i > 0) v_path[i] = '\0';
 
@@ -1201,7 +1201,7 @@ static struct nomount_rule *nm_alloc_rule(const char *v_path, const char *r_path
     rule = kzalloc((sizeof(struct nomount_rule) + v_len + 1 + r_len + 1), GFP_KERNEL);
     if (!rule) return ERR_PTR(-ENOMEM);
 
-    rule->v_hash = full_name_hash(NULL, v_path, v_len);
+    rule->v_hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, v_path, v_len);
     rule->flags = flags;
     rule->v_len = v_len;
     rule->target_uid = target_uid;
@@ -1299,7 +1299,7 @@ static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len,
 static void __nomount_del_rule(const char *v_path, size_t v_len, unsigned int target_uid, struct hlist_head *r_victims)
 {
     struct nomount_rule *rule;
-    u32 hash = full_name_hash(NULL, v_path, v_len);
+    u32 hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, v_path, v_len);
 
     hash_for_each_possible(nomount_rules_ht, rule, vpath_node, hash) {
         if (rule->v_hash == hash && rule->v_len == v_len && rule->target_uid == target_uid &&
