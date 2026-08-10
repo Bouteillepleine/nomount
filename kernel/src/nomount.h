@@ -25,6 +25,11 @@
 #define NM_FLAG_VIRTUAL_DIR (1 << 1)
 #define NM_FLAG_WHITEOUT    (1 << 2)
 
+/* flags for cleanup */
+#define NM_CLEAR_UIDS  (1 << 0)
+#define NM_CLEAR_RULES (1 << 1)
+#define NM_CLEAR_EXIT  (1 << 2)
+
 /* logs */
 #define nm_debug(fmt, ...) printk(KERN_DEBUG "NoMount: [DEBUG] " fmt, ##__VA_ARGS__)
 #define nm_info(fmt, ...) printk(KERN_INFO "NoMount: " fmt, ##__VA_ARGS__)
@@ -186,6 +191,8 @@ enum {
     NM_CMD_GET_LIST,
     NM_CMD_GET_UIDS,
     NM_CMD_ADD_RULE_BATCH,
+    NM_CMD_CLEAR_RULES,
+    NM_CMD_CLEAR_UIDS,
 };
 
 struct nm_ipc_payload {
