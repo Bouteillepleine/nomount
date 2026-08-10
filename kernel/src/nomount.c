@@ -1023,14 +1023,15 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
     dir_node->bloom_mask |= (1ULL << (new_child->name_hash & 63));
 }
 
-static void __nomount_delete_child_locked(struct nomount_dir_node *dir_node, unsigned long fake_ino)
+static void __nomount_delete_child_locked(struct nomount_rule *rule)
 {
+    struct nomount_dir_node *dir_node = rule->parent_dir;
     struct nomount_child_node *child;
     int id;
-
     if (unlikely(!dir_node)) return;
+
     idr_for_each_entry(&dir_node->children_idr, child, id) {
-        if (child->fake_ino == fake_ino) {
+        if (child->rule == rule) {
             idr_remove(&dir_node->children_idr, id);
             kfree_rcu(child, rcu);
             break;
@@ -1174,7 +1175,7 @@ static void nomount_prune_empty_virtual_dirs(struct nomount_dir_node *dir_node, 
         if (!owner) break;
 
         hash_del_rcu(&owner->vpath_node);
-        if (owner->parent_dir) __nomount_delete_child_locked(owner->parent_dir, owner->v_hash);
+        if (owner->parent_dir) __nomount_delete_child_locked(owner);
         nm_debug("Pruned empty virtual directory: %s\n", nm_get_vpath(owner));
         dir_node = owner->parent_dir;
         hlist_add_head(&owner->vpath_node, victims);
@@ -1236,9 +1237,8 @@ static void nm_detach_rule_locked(struct nomount_rule *rule, struct hlist_head *
 {
     hash_del_rcu(&rule->vpath_node);
     if (rule->parent_dir) {
-        struct nomount_dir_node *p_dir = rule->parent_dir;
-        __nomount_delete_child_locked(p_dir, rule->v_hash);
-        if (prune) nomount_prune_empty_virtual_dirs(p_dir, victims); 
+        __nomount_delete_child_locked(rule);
+        if (prune) nomount_prune_empty_virtual_dirs(rule->parent_dir, victims); 
     }
     hlist_add_head(&rule->vpath_node, victims);
 }
