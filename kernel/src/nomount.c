@@ -1306,24 +1306,29 @@ static void __nomount_del_rule(const char *v_path, size_t v_len, unsigned int ta
     }
 }
 
-static void __nomount_clear_all(bool is_exit)
+static void __nomount_clear_all(int clear_flags)
 {
     struct nomount_rule *rule;
     struct hlist_node *tmp;
     int bkt;
     HLIST_HEAD(r_victims);
 
-    static_branch_disable(&nomount_active_uids);
-    idr_destroy(&nomount_uid_idr);
-    hash_for_each_safe(nomount_rules_ht, bkt, tmp, rule, vpath_node) {
-        nm_detach_rule_locked(rule, &r_victims, false);
+    if (clear_flags & NM_CLEAR_UIDS) {
+        static_branch_disable(&nomount_active_uids);
+        idr_destroy(&nomount_uid_idr);
+        if (!(clear_flags & NM_CLEAR_EXIT)) idr_init(&nomount_uid_idr);
     }
-    synchronize_rcu();
-    hlist_for_each_entry_safe(rule, tmp, &r_victims, vpath_node) {
-        nm_free_rule(rule);
+    if (clear_flags & NM_CLEAR_RULES) {
+        hash_for_each_safe(nomount_rules_ht, bkt, tmp, rule, vpath_node) {
+            nm_detach_rule_locked(rule, &r_victims, false);
+        }
+        synchronize_rcu();
+        hlist_for_each_entry_safe(rule, tmp, &r_victims, vpath_node) {
+            nm_free_rule(rule);
+        }
     }
 
-    if (is_exit) nomount_restore_superblocks();
+    if (clear_flags & NM_CLEAR_EXIT) nomount_restore_superblocks();
 }
 
 /*** Inter-Process Communication API ***/
@@ -1404,13 +1409,6 @@ static int nm_process_ipc_payload(unsigned long user_addr)
             break;
         }
 
-        case NM_CMD_CLEAR_ALL:
-            mutex_lock(&nomount_write_mutex);
-            __nomount_clear_all(false);
-            mutex_unlock(&nomount_write_mutex);
-            nm_info("Cleared all active rules and UIDs\n");
-            break;
-
         case NM_CMD_ADD_UID:
             if (!nomount_is_uid_blocked(payload->target_uid)) {
                 mutex_lock(&nomount_write_mutex);
@@ -1437,6 +1435,21 @@ static int nm_process_ipc_payload(unsigned long user_addr)
             }
             mutex_unlock(&nomount_write_mutex);
             break;
+
+        case NM_CMD_CLEAR_ALL:
+        case NM_CMD_CLEAR_UIDS:
+        case NM_CMD_CLEAR_RULES: {
+            int clear_flags = 0;
+            if (payload->cmd == NM_CMD_CLEAR_ALL) clear_flags = (NM_CLEAR_UIDS | NM_CLEAR_RULES);
+            if (payload->cmd == NM_CMD_CLEAR_UIDS) clear_flags = NM_CLEAR_UIDS;
+            if (payload->cmd == NM_CMD_CLEAR_RULES) clear_flags = NM_CLEAR_RULES;
+
+            mutex_lock(&nomount_write_mutex);
+            __nomount_clear_all(clear_flags);
+            mutex_unlock(&nomount_write_mutex);
+            nm_info("Executed selective clear (cmd: %u)\n", payload->cmd);
+            break;
+        }
 
         case NM_CMD_GET_LIST: {
             struct nomount_rule *rule;
@@ -1556,7 +1569,7 @@ static void __exit nomount_exit(void)
     unregister_key_type(&nm_key_type);
 
     mutex_lock(&nomount_write_mutex);
-    __nomount_clear_all(true);
+    __nomount_clear_all(NM_CLEAR_UIDS | NM_CLEAR_RULES | NM_CLEAR_EXIT);
     mutex_unlock(&nomount_write_mutex);
     rcu_barrier();
     kmem_cache_destroy(nm_dir_cachep);
