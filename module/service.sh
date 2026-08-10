@@ -29,5 +29,5 @@ mv -f "$TEMP_FILE" "$EXCLUSION_FILE" || exit 0
 
 while IFS= read -r uid; do
     [ -z "$uid" ] && continue
-    "$NM_BIN" block "$uid"
+    "$NM_BIN" uid add "$uid"
 done < "$EXCLUSION_FILE"

@@ -29,7 +29,7 @@ fi
 
 touch "$BOOT_SEMAPHORE"
 
-if ! "$LOADER" v > /dev/null 2>&1; then
+if ! "$LOADER" version > /dev/null 2>&1; then
     echo "[FATAL] NoMount Internal API is missing/unresponsive." >> "$LOG_FILE"
     touch "$MODDIR/disable"
     sed -i "s|^description=.*|description=[❌ ERROR: Kernel not patched] \\\\n$BASE_DESC|" "$PROP_FILE"
@@ -69,18 +69,18 @@ for mod_path in "$MODULES_DIR"/*; do
                         if [ "${relative_path##*/}" = ".replace" ]; then
                             target_dir="/${relative_path%/.replace}"
                             echo "  -> Whiteout: $target_dir" >> "$LOG_FILE"
-                            "$LOADER" w "$target_dir" 2>> "$LOG_FILE"
+                            "$LOADER" rule add --whiteout "$target_dir" 2>> "$LOG_FILE"
                             continue
                         fi
 
                         if [ -c "$real_path" ]; then
                             echo "  -> Whiteout: $virtual_path" >> "$LOG_FILE"
-                            "$LOADER" w "$virtual_path" 2>> "$LOG_FILE"
+                            "$LOADER" rule add --whiteout "$virtual_path" 2>> "$LOG_FILE"
                             continue
                         fi
 
                         echo "  -> Inject: $virtual_path" >> "$LOG_FILE"
-                        "$LOADER" add "$virtual_path" "$real_path" 2>> "$LOG_FILE"
+                        "$LOADER" rule add "$virtual_path" "$real_path" 2>> "$LOG_FILE"
                     done
                 else
                     find -L "$partition" \( -type c -o -name ".replace" \) -exec sh -c '
@@ -91,14 +91,14 @@ for mod_path in "$MODULES_DIR"/*; do
                                 printf "/%s\0" "$f"
                             fi
                         done
-                    ' _ {} + 2>/dev/null | xargs -0 -r "$LOADER" w >> "$LOG_FILE" 2>&1
+                    ' _ {} + 2>/dev/null | xargs -0 -r "$LOADER" rule add --whiteout >> "$LOG_FILE" 2>&1
 
                     find -L "$partition" \( -type f -o -type l \) ! -name ".replace" -exec sh -c '
                         mod="$1"; shift
                         for f do
                             printf "/%s\0%s/%s\0" "$f" "$mod" "$f"
                         done
-                    ' _ "$mod_path" {} + 2>/dev/null | xargs -0 -r "$LOADER" add >> "$LOG_FILE" 2>&1
+                    ' _ "$mod_path" {} + 2>/dev/null | xargs -0 -r "$LOADER" rule add >> "$LOG_FILE" 2>&1
                 fi
             )
         fi
@@ -113,7 +113,7 @@ sed -i "s|^description=.*|description=$BASE_DESC|" "$PROP_FILE"
 
 if $VERBOSE; then
     echo "Current files injected:" >> "$LOG_FILE"
-    "$LOADER" list >> "$LOG_FILE"
+    "$LOADER" rule list >> "$LOG_FILE"
 fi
 
 exit 0
