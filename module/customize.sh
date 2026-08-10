@@ -15,7 +15,7 @@ set_perm "$MODPATH/bin/nm" 0 0 0755
 rm -rf $MODPATH/bin/nm-*
 
 ui_print "- Checking Kernel support via Internal API..."
-if "$MODPATH/bin/nm" v > /dev/null 2>&1; then
+if "$MODPATH/bin/nm" version > /dev/null 2>&1; then
   ui_print "  [OK] NoMount Internal API detected."
   ui_print "  [OK] System is ready for injection."
 else

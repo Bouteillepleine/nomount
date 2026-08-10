@@ -302,8 +302,8 @@ async function loadHome() {
         getprop ro.build.version.release; echo "|||"
         getprop ro.build.version.sdk; echo "|||"
         grep "version=" ${MOD_DIR}/nomount/module.prop | cut -d= -f2; echo "|||"
-        ${NM_BIN} v; echo "|||"
-        ${NM_BIN} list json
+        ${NM_BIN} version; echo "|||"
+        ${NM_BIN} rule list --json
     `;
 
     try {
@@ -372,7 +372,7 @@ async function loadModules() {
 
     try {
         const script = `
-            ${NM_BIN} list json; echo "|||"
+            ${NM_BIN} rule list --json; echo "|||"
             cd ${MOD_DIR}
             for mod in *; do
                 [ ! -d "$mod" ] || [ "$mod" = "nomount" ] || [ ! -f "$mod/module.prop" ] && continue
@@ -451,13 +451,13 @@ async function loadModule(modId) {
                     printf "/%s\\0" "$f"
                 fi
             done
-        ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} w
+        ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule add --whiteout
         find -L system vendor product system_ext odm oem \\( -type f -o -type l \\) ! -name ".replace" -exec sh -c '
             mod="$1"; shift
             for f do
                 printf "/%s\\0%s/%s\\0" "$f" "$mod" "$f"
             done
-        ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r ${NM_BIN} a
+        ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule add
     `;
     try { await exec(script); } catch (e) { throw e; }
 }
@@ -475,7 +475,7 @@ async function unloadModule(modId) {
                     printf "/%s\\0" "$f"
                 fi
             done
-        ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} d
+        ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule del
     `;
     try { await exec(script); } catch (e) { throw e; }
 }
@@ -491,7 +491,7 @@ async function loadExclusions() {
     const loadId = ++exclusionsLoadId;
 
     try {
-        const { stdout } = await exec(`${NM_BIN} ls uid 2>/dev/null`);
+        const { stdout } = await exec(`${NM_BIN} uid list 2>/dev/null`);
 
         let blockedUids = [];
         try {
@@ -665,7 +665,7 @@ function renderNextAppBatch() {
 async function removeExclusion(uid, name) {
     showToast(translate('unblocking_name', { name }));
     try {
-        const unblockResult = await exec(`${NM_BIN} unblock ${uid}`);
+        const unblockResult = await exec(`${NM_BIN} uid del ${uid}`);
         if (unblockResult.errno !== 0) throw new Error(unblockResult.stderr || 'Failed to unblock UID');
         const remainingUids = parseUidList((await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`)).stdout).filter(u => u !== String(uid));
         await exec(buildWriteUidListCmd(remainingUids));
@@ -682,8 +682,8 @@ async function addExclusion(uid, name) {
     }
 
     try {
-        const blockResult = await exec(`${NM_BIN} block ${uidStr}`);
-        if (blockResult.errno !== 0) showToast(translate('blocked_saved'));
+        const blockResult = await exec(`${NM_BIN} uid add ${uidStr}`);
+        if (blockResult.errno !== 0) throw new Error(blockResult.stderr || 'Failed to block UID');
         else showToast(alreadyBlocked ? translate('blocked_already') : translate('blocked', { name }));
         const currentUids = parseUidList((await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`)).stdout);
         if (!currentUids.includes(uidStr)) await exec(buildWriteUidListCmd([...currentUids, uidStr]));
@@ -714,7 +714,7 @@ async function loadOptions() {
             try {
                 const persistResult = await exec(buildWriteUidListCmd([]));
                 if (persistResult.errno !== 0) throw new Error(persistResult.stderr || 'Failed to clear exclusions');
-                const clearResult = await exec(`${NM_BIN} clear`);
+                const clearResult = await exec(`${NM_BIN} clear all`);
                 if (clearResult.errno !== 0) throw new Error(clearResult.stderr || 'Failed to clear runtime rules');
                 showToast(translate('clear_rules_done'));
                 loadModules();
