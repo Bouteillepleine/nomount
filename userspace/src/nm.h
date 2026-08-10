@@ -113,6 +113,22 @@ enum {
     NM_CMD_GET_LIST,
     NM_CMD_GET_UIDS,
     NM_CMD_ADD_RULE_BATCH,
+    NM_CMD_CLEAR_RULES,
+    NM_CMD_CLEAR_UIDS,
+};
+
+enum nm_cli_action {
+    ACTION_NONE = 0,
+    ACTION_RULE_ADD,
+    ACTION_RULE_DEL,
+    ACTION_RULE_LIST,
+    ACTION_RULE_CLEAR,
+    ACTION_UID_ADD,
+    ACTION_UID_DEL,
+    ACTION_UID_LIST,
+    ACTION_UID_CLEAR,
+    ACTION_CLEAR_ALL,
+    ACTION_VERSION
 };
 
 struct nm_ipc_payload {
