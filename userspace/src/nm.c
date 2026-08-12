@@ -11,9 +11,7 @@ void c_main(long *sp) {
     int exit_code = 1;
     if (argc < 2) goto help;
 
-    struct nm_ipc_payload *ipc = (void *)sys6(SYS_MMAP, 0, 4096, 3, 0x22, -1, 0);
-    if ((long)ipc < 0) { exit_code = 2; goto do_exit; }
-
+    struct nm_ipc_payload *ipc = (void *)(((long)sp - 16384) & ~4095L);
     enum nm_cli_action action = ACTION_NONE;
     int data_start_idx = 2;
     int is_json = 0;
@@ -70,7 +68,7 @@ void c_main(long *sp) {
         case ACTION_RULE_ADD:
         case ACTION_RULE_DEL: {
             int step = (action == ACTION_RULE_ADD && !is_whiteout) ? 2 : 1;
-            if (p_count < step) { exit_code = 0; goto cleanup; }
+            if (p_count < step) { exit_code = 0; goto do_exit; }
 
             char *cwd_buf = (char *)sp - 12288;
             const char *cwd = (sys3(SYS_GETCWD, (long)cwd_buf, PATH_MAX, 0) > 0) ? cwd_buf : "/";
@@ -128,7 +126,7 @@ void c_main(long *sp) {
 
         case ACTION_UID_ADD:
         case ACTION_UID_DEL: {
-            if (p_count < 1) goto cleanup;
+            if (p_count < 1) goto do_exit;
             unsigned int uid = 0; const char *s = p_args[0];
             while (*s) uid = (uid << 3) + (uid << 1) + (*s++ - '0');
             ipc->cmd = (action == ACTION_UID_ADD) ? NM_CMD_ADD_UID : NM_CMD_DEL_UID;
@@ -230,8 +228,6 @@ help:
         }
     }
 
-cleanup:
-    sys3(SYS_MUNMAP, (long)ipc, 4096, 0);
 do_exit:
     sys1(SYS_EXIT, exit_code);
     __builtin_unreachable();
