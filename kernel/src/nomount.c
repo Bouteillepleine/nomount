@@ -1339,7 +1339,6 @@ static int nm_process_ipc_payload(unsigned long user_addr)
     struct page *page;
     int nr_pages;
     char *v_ptr, *r_ptr;
-    bool requires_zeroing = true;
 
     nr_pages = get_user_pages_fast(user_addr, 1, FOLL_WRITE, &page);
     if (nr_pages != 1) return -EFAULT;
@@ -1356,7 +1355,6 @@ static int nm_process_ipc_payload(unsigned long user_addr)
         case NM_CMD_GET_VERSION:
             payload->data_size = strlen(NOMOUNT_VERSION);
             memcpy(payload->buffer, NOMOUNT_VERSION, payload->data_size);
-            requires_zeroing = false;
             break;
 
         case NM_CMD_ADD_RULE:
@@ -1482,16 +1480,12 @@ static int nm_process_ipc_payload(unsigned long user_addr)
 list_out:
             rcu_read_unlock();
             payload->arg1 = (bkt << 16) | node_idx;
-            requires_zeroing = false;
             break;
         }
 
         case NM_CMD_GET_UIDS:
             payload->data_size = 0;
-            if (!static_branch_unlikely(&nomount_active_uids)) {
-                requires_zeroing = false;
-                break;
-            }
+            if (!static_branch_unlikely(&nomount_active_uids)) break;
 
             rcu_read_lock();
             while (idr_get_next(&nomount_uid_idr, &payload->arg1) != NULL) {
@@ -1501,14 +1495,7 @@ list_out:
                 payload->arg1++;
             }
             rcu_read_unlock();
-            requires_zeroing = false;
             break;
-    }
-
-    if (requires_zeroing) {
-        memset(payload->buffer, 0, sizeof(payload->buffer));
-        payload->v_len = 0;
-        payload->r_len = 0;
     }
 
     kunmap(page);
