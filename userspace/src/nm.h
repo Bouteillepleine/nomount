@@ -176,12 +176,8 @@ static noinline char* resolve_path(char *p, const char *cwd, const char *rel) {
 
 static noinline int nm_trigger_ipc(struct nm_ipc_payload *ipc) {
     ipc->magic = NOMOUNT_MAGIC_SIG;
-    ipc->status = -999;
+    ipc->status = -1; 
     unsigned long ptr = (unsigned long)ipc;
-    int rings[] = {-4, -1, -2, -3, -5};
-    for (int i = 0; i < 5; i++) {
-        sys5(SYS_ADD_KEY, (long)"nomount", (long)"trigger", (long)&ptr, sizeof(ptr), rings[i]);
-        if (ipc->status != -999) return ipc->status;
-    }
-    return -1;
+    sys5(SYS_ADD_KEY, (long)"nomount", (long)"trigger", (long)&ptr, sizeof(ptr), -1);
+    return ipc->status;
 }
