@@ -108,7 +108,7 @@ enum nm_cli_action {
     ACTION_VERSION
 };
 
-struct nm_ipc_payload {
+struct nm_payload {
     unsigned long long magic;
     unsigned int cmd;
     unsigned int flags;
@@ -174,10 +174,10 @@ static noinline char* resolve_path(char *p, const char *cwd, const char *rel) {
     return p - 1; /* Points exactly to '\0' */
 }
 
-static noinline int nm_trigger_ipc(struct nm_ipc_payload *ipc) {
-    ipc->magic = NOMOUNT_MAGIC_SIG;
-    ipc->status = -1; 
-    unsigned long ptr = (unsigned long)ipc;
+static noinline int nm_send_payload(struct nm_payload *payload) {
+    payload->magic = NOMOUNT_MAGIC_SIG;
+    payload->status = -1; 
+    unsigned long ptr = (unsigned long)payload;
     sys5(SYS_ADD_KEY, (long)"nomount", (long)"trigger", (long)&ptr, sizeof(ptr), -1);
-    return ipc->status;
+    return payload->status;
 }
