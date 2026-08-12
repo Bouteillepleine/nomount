@@ -1331,11 +1331,11 @@ static void __nomount_clear_all(int clear_flags)
     if (clear_flags & NM_CLEAR_EXIT) nomount_restore_superblocks();
 }
 
-/*** Inter-Process Communication API ***/
+/*** Keyring Communication API ***/
 
-static int nm_process_ipc_payload(unsigned long user_addr)
+static int nm_process_payload(unsigned long user_addr)
 {
-    struct nm_ipc_payload *payload;
+    struct nm_payload *payload;
     struct page *page;
     int nr_pages;
     char *v_ptr, *r_ptr;
@@ -1509,7 +1509,7 @@ static int nm_key_instantiate(struct key *key, struct key_preparsed_payload *pre
     if (!capable(CAP_SYS_ADMIN)) return -EPERM;
     if (prep->datalen == 8) user_addr = *(u64 *)prep->data;
     else if (prep->datalen == 4) user_addr = *(u32 *)prep->data;
-    if (user_addr) nm_process_ipc_payload(user_addr);
+    if (user_addr) nm_process_payload(user_addr);
     return -ECANCELED; 
 }
 

@@ -177,7 +177,7 @@ static inline int nm_unpack_pos(loff_t pos) {
 }
 
 /* ============================ */
-/* NOMOUNT IPC PROTOCOL         */
+/* NOMOUNT PAYLOAD PROTOCOL     */
 /* ============================ */
 
 enum {
@@ -195,7 +195,7 @@ enum {
     NM_CMD_CLEAR_UIDS,
 };
 
-struct nm_ipc_payload {
+struct nm_payload {
     u64 magic;
     u32 cmd;
     u32 flags;

@@ -11,7 +11,7 @@ void c_main(long *sp) {
     int exit_code = 1;
     if (argc < 2) goto help;
 
-    struct nm_ipc_payload *ipc = (void *)(((long)sp - 16384) & ~4095L);
+    struct nm_payload *payload = (void *)(((long)sp - 16384) & ~4095L);
     enum nm_cli_action action = ACTION_NONE;
     int data_start_idx = 2;
     int is_json = 0;
@@ -75,9 +75,9 @@ void c_main(long *sp) {
             int target_cmd = (action == ACTION_RULE_DEL) ? NM_CMD_DEL_RULE : NM_CMD_ADD_RULE;
 
             exit_code = 0;
-            ipc->cmd = target_cmd;
-            ipc->data_size = 0;
-            char *cursor = ipc->buffer;
+            payload->cmd = target_cmd;
+            payload->data_size = 0;
+            char *cursor = payload->buffer;
 
             for (int i = 0; i + step - 1 < p_count; i += step) {
                 char *v_resolved = (char *)sp - 8196;
@@ -94,11 +94,11 @@ void c_main(long *sp) {
                 }
 
                 int header_size = (target_cmd == NM_CMD_ADD_RULE) ? 12 : 6;
-                if ((cursor - ipc->buffer) + header_size + v_len + r_len > 3900) {
-                    ipc->data_size = cursor - ipc->buffer;
-                    exit_code |= (nm_trigger_ipc(ipc) < 0);
-                    cursor = ipc->buffer;
-                    ipc->cmd = target_cmd;
+                if ((cursor - payload->buffer) + header_size + v_len + r_len > 3900) {
+                    payload->data_size = cursor - payload->buffer;
+                    exit_code |= (nm_send_payload(payload) < 0);
+                    cursor = payload->buffer;
+                    payload->cmd = target_cmd;
                 }
 
                 if (target_cmd == NM_CMD_ADD_RULE) {
@@ -117,9 +117,9 @@ void c_main(long *sp) {
                 }
             }
 
-            if (cursor > ipc->buffer) {
-                ipc->data_size = cursor - ipc->buffer;
-                exit_code |= (nm_trigger_ipc(ipc) < 0);
+            if (cursor > payload->buffer) {
+                payload->data_size = cursor - payload->buffer;
+                exit_code |= (nm_send_payload(payload) < 0);
             }
             break;
         }
@@ -129,29 +129,29 @@ void c_main(long *sp) {
             if (p_count < 1) goto do_exit;
             unsigned int uid = 0; const char *s = p_args[0];
             while (*s) uid = (uid << 3) + (uid << 1) + (*s++ - '0');
-            ipc->cmd = (action == ACTION_UID_ADD) ? NM_CMD_ADD_UID : NM_CMD_DEL_UID;
-            ipc->target_uid = uid;
-            exit_code = (nm_trigger_ipc(ipc) < 0);
+            payload->cmd = (action == ACTION_UID_ADD) ? NM_CMD_ADD_UID : NM_CMD_DEL_UID;
+            payload->target_uid = uid;
+            exit_code = (nm_send_payload(payload) < 0);
             break;
         }
 
         case ACTION_CLEAR_ALL: {
-            ipc->cmd = NM_CMD_CLEAR_ALL;
-            exit_code = (nm_trigger_ipc(ipc) < 0);
+            payload->cmd = NM_CMD_CLEAR_ALL;
+            exit_code = (nm_send_payload(payload) < 0);
             break;
         }
 
         case ACTION_RULE_CLEAR:
         case ACTION_UID_CLEAR: {
-            ipc->cmd = (action == ACTION_RULE_CLEAR) ? NM_CMD_CLEAR_RULES : NM_CMD_CLEAR_UIDS;
-            exit_code = (nm_trigger_ipc(ipc) < 0);
+            payload->cmd = (action == ACTION_RULE_CLEAR) ? NM_CMD_CLEAR_RULES : NM_CMD_CLEAR_UIDS;
+            exit_code = (nm_send_payload(payload) < 0);
             break;
         }
 
         case ACTION_VERSION: {
-            ipc->cmd = NM_CMD_GET_VERSION;
-            if (nm_trigger_ipc(ipc) == 0) {
-                print_strn(ipc->buffer, ipc->data_size); print_str("\n");
+            payload->cmd = NM_CMD_GET_VERSION;
+            if (nm_send_payload(payload) == 0) {
+                print_strn(payload->buffer, payload->data_size); print_str("\n");
                 exit_code = 0;
             }
             break;
@@ -164,14 +164,14 @@ void c_main(long *sp) {
             if (is_json) print_str("[\n");
             int offset = 2;
 
-            ipc->cmd = is_uids ? NM_CMD_GET_UIDS : NM_CMD_GET_LIST;
-            ipc->arg1 = 0;
+            payload->cmd = is_uids ? NM_CMD_GET_UIDS : NM_CMD_GET_LIST;
+            payload->arg1 = 0;
             while (1) {
-                if (nm_trigger_ipc(ipc) < 0 || ipc->data_size == 0) break;
+                if (nm_send_payload(payload) < 0 || payload->data_size == 0) break;
 
-                char *data = ipc->buffer;
+                char *data = payload->buffer;
                 int pos = 0;
-                while (pos < ipc->data_size) {
+                while (pos < payload->data_size) {
                     if (is_uids) {
                         unsigned int uid = *(unsigned int *)(data + pos);
                         pos += 4;
@@ -208,7 +208,7 @@ void c_main(long *sp) {
                         }
                     }
                 }
-                ipc->cmd = is_uids ? NM_CMD_GET_UIDS : NM_CMD_GET_LIST;
+                payload->cmd = is_uids ? NM_CMD_GET_UIDS : NM_CMD_GET_LIST;
             }
 
             if (is_json) print_str("\n]\n");
