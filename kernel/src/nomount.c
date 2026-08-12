@@ -1257,6 +1257,12 @@ static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len,
     hash_for_each_possible(nomount_rules_ht, existing, vpath_node, rule->v_hash) {
         if (existing->v_hash == rule->v_hash && existing->v_len == v_len &&
              memcmp(nm_get_vpath(existing), nm_get_vpath(rule), v_len) == 0) {
+            if (existing->this_dir) {
+                if (rule->this_dir) call_rcu(&rule->this_dir->rcu, nm_dir_rcu_free);
+                rule->this_dir = existing->this_dir;
+                if (rule->this_dir->_tag_ptr & 1UL) rule->this_dir->_tag_ptr = (unsigned long)rule | 1UL;
+                existing->this_dir = NULL;
+            }
             nm_detach_rule_locked(existing, &victims, false);
             nm_info("Shadowing existing rule for: %s\n", nm_get_vpath(rule));
             break;
