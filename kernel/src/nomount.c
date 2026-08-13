@@ -5,6 +5,7 @@
 #include <linux/slab.h>
 #include <linux/cred.h>
 #include <linux/xattr.h>
+#include <linux/shmem_fs.h>
 #include <linux/module.h>
 #include "nomount.h"
 
@@ -510,17 +511,42 @@ static ssize_t nm_write_iter(struct kiocb *iocb, struct iov_iter *from)
 
 static int nm_mmap(struct file *file, struct vm_area_struct *vma)
 {
-    struct file *real_file = file->private_data;
+    struct file *shmem_file, *real_file = file->private_data;
+    loff_t pos_in = 0, pos_out = 0, size, remaining;
     int ret;
     if (!real_file || !real_file->f_op->mmap) return -ENODEV;
 
-    vma->vm_file = real_file;
-    ret = real_file->f_op->mmap(real_file, vma);
-    if (ret == 0 && vma->vm_file == real_file) vma->vm_file = file;
-    if (ret == 0) file_inode(file)->i_flags &= ~S_PRIVATE;
+    size = i_size_read(file_inode(real_file));
+    if (size <= 0) return -EINVAL;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
+    shmem_file = shmem_file_setup("nm_shmem", size, vma->flags);
+#else
+    shmem_file = shmem_file_setup("nm_shmem", size, vma->vm_flags);
+#endif
+    if (IS_ERR(shmem_file)) return PTR_ERR(shmem_file);
+    file_inode(shmem_file)->i_flags |= S_PRIVATE;
+
+    remaining = size;
+    while (remaining > 0) {
+        loff_t copied = vfs_copy_file_range(real_file, pos_in, shmem_file, pos_out, remaining, 0);
+        if (copied <= 0) break;
+        remaining -= copied;
+    }
+
+    get_file(shmem_file);
+    if (vma->vm_file) fput(vma->vm_file);
+    vma->vm_file = shmem_file;
+    ret = shmem_file->f_op->mmap(shmem_file, vma);
+
+    if (ret != 0) vma->vm_file = file;
+    else file_inode(file)->i_flags &= ~S_PRIVATE;
+    fput(shmem_file);
+
     return ret;
 }
 
+// TODO: implement shmem mmap'ing here like in nm_mmap
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
 static int nm_mmap_prepare(struct vm_area_desc *desc)
 {
