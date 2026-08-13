@@ -105,7 +105,6 @@ static NM_ACTOR_RET nomount_actor_proxy(struct dir_context *ctx, const char *nam
     u32 hash;
     int id;
 
-    proxy->emitted++;
     if (!proxy->dir_node) goto do_real_actor;
     hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, namelen);
     if (!(proxy->dir_node->bloom_mask & (1ULL << (hash & 63))))
@@ -128,6 +127,7 @@ do_real_actor:
     proxy->orig_ctx->pos = proxy->ctx.pos;
     ret = proxy->orig_ctx->actor(proxy->orig_ctx, name, namelen, offset, ino, d_type);
     proxy->ctx.pos = proxy->orig_ctx->pos;
+    proxy->emitted++;
 
     return ret;
 }
