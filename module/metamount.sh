@@ -79,10 +79,15 @@ for mod_path in "$MODULES_DIR"/*; do
                 if $VERBOSE; then
                     find -L "$partition" \( -type f -o -type l -o -type c \) 2>/dev/null | while read -r relative_path; do
                         real_path="$mod_path/$relative_path"
-                        virtual_path="/$relative_path"
+                        v_path="$relative_path"
+
+                        if [ "${v_path#system/odm/}" != "$v_path" ]; then
+                            v_path="odm/${v_path#system/odm/}"
+                        fi
+                        virtual_path="/$v_path"
 
                         if [ "${relative_path##*/}" = ".replace" ]; then
-                            target_dir="/${relative_path%/.replace}"
+                            target_dir="/${v_path%/.replace}"
                             echo "  -> Whiteout: $target_dir" >> "$LOG_FILE"
                             "$LOADER" rule add --whiteout "$target_dir" 2>> "$LOG_FILE"
                             continue
@@ -100,18 +105,17 @@ for mod_path in "$MODULES_DIR"/*; do
                 else
                     find -L "$partition" \( -type c -o -name ".replace" \) -exec sh -c '
                         for f do
-                            if [ "${f##*/}" = ".replace" ]; then
-                                printf "/%s\0" "${f%/.replace}"
-                            else
-                                printf "/%s\0" "$f"
-                            fi
+                            v="$f"; [ "${v#system/odm/}" != "$v" ] && v="odm/${v#system/odm/}"
+                            if [ "${f##*/}" = ".replace" ]; then printf "/%s\0" "${v%/.replace}"
+                            else printf "/%s\0" "$v"; fi
                         done
                     ' _ {} + 2>/dev/null | xargs -0 -r "$LOADER" rule add --whiteout >> "$LOG_FILE" 2>&1
 
                     find -L "$partition" \( -type f -o -type l \) ! -name ".replace" -exec sh -c '
                         mod="$1"; shift
                         for f do
-                            printf "/%s\0%s/%s\0" "$f" "$mod" "$f"
+                            v="$f"; [ "${v#system/odm/}" != "$v" ] && v="odm/${v#system/odm/}"
+                            printf "/%s\0%s/%s\0" "$v" "$mod" "$f"
                         done
                     ' _ "$mod_path" {} + 2>/dev/null | xargs -0 -r "$LOADER" rule add >> "$LOG_FILE" 2>&1
                 fi
