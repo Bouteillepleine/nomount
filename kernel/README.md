@@ -2,32 +2,43 @@
 
 This section contains everything related to the integration of NoMount into the kernel. 
 
-### **Structure**:
-
-The NoMount integration is divided into two main components:
-
-* Central Code (src/): Contains the central logic of NoMount (nomount.c) and its definitions (nomount.h). Everything is kept privatized within the file subsystem (fs/).
-* Integration Patch (*.patch): Contains the hooks that must be applied in the kernel source for the correct functioning of NoMount.
-
 ### Integration:
 
-1. Integrate NoMount Hooks:
-
-Apply the patch corresponding to your kernel version, e.g, for kernels 5.10:
+If you want to integrate NoMount in your kernel automatically without problems, you can use the script:
 
 ```bash
-cd <your_kernel_source>
-patch -p1 < path/to/nomount/kernel/nomount_5.10_kernel_integration.patch
+curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
 ```
 
-If the patch fails or you prefer to integrate NoMount manually in your kernel, see [INTEGRATION.md](INTEGRATION.md).
+To integrate a specific branch:
+
+```bash
+curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -s dev
+```
+
+In case to you want to integrate it manually, here the steps:
+
+1. Integrate NoMount:
+
+Add this to fs/Kconfig:
+
+```kconfig
+source "fs/nomount/Kconfig"
+```
+
+And add this to fs/Makefile:
+
+```make
+obj-$(CONFIG_NOMOUNT) += nomount/
+```
 
 2. Copy the necessary files:
 
-Transfer the NoMount code (src/) to the fs directory (fs/) of your kernel:
+Transfer the NoMount code (src/) to the fs directory (fs/nomount/) of your kernel:
 
 ```bash
-cp path/to/nomount/kernel/src/* <your_kernel_source>/fs
+mkdir -p fs/nomount
+cp path/to/nomount/kernel/src/* <your_kernel_source>/fs/nomount
 ```
 
 3. Configure and compile NoMount:
