@@ -5,11 +5,16 @@ on:
     branches: [ master, dev ]
     paths-ignore: 
       - '**.md'
-      - 'kernel/**'
   workflow_dispatch:
 
 jobs:
-  build:
+  build-lkm:
+    uses: ./.github/workflows/build-lkm.yml
+    with:
+      build_all: true
+
+  build-module:
+    needs: build-lkm
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -41,13 +46,17 @@ jobs:
             -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--entry=_start nm.c -o ../../bin/nm-arm
 
           cd ../../bin
-          wc -c nm-*
           ../sstrip -z nm-arm64
           ../sstrip -z nm-arm
-          wc -c nm-*
-          file nm-*
           mkdir -p ../module/bin
           mv nm-* ../module/bin/
+
+      - name: Download all LKM artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: nomount-*
+          path: module/lkm
+          merge-multiple: true
 
       - name: Update version code
         run: sed -i 's/^versionCode=.*/versionCode=${{ github.run_number }}/' module/module.prop
@@ -82,11 +91,9 @@ jobs:
           install -m 0644 "$WEBUI_BUILD/index.html" "$MODULE_BUILD/webroot/index.html"
 
           rm "$MODULE_BUILD/webroot/theme.css"
-          du -sh module/webroot "$MODULE_BUILD/webroot"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.MODULE_NAME }}-${{ env.MODULE_VERSION }}-${{ github.run_number }}-${{ env.COMMIT_HASH }}
           path: ${{ runner.temp }}/nomount-module-${{ github.run_id }}-${{ github.run_attempt }}/
-

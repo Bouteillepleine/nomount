@@ -29,12 +29,27 @@ fi
 
 touch "$BOOT_SEMAPHORE"
 
-if ! "$LOADER" version > /dev/null 2>&1; then
-    echo "[FATAL] NoMount Internal API is missing/unresponsive." >> "$LOG_FILE"
-    touch "$MODDIR/disable"
-    sed -i "s|^description=.*|description=[❌ ERROR: Kernel not patched] \\\\n$BASE_DESC|" "$PROP_FILE"
-    rm -f "$BOOT_SEMAPHORE"
-    exit 1
+echo "[INFO] Checking NoMount kernel support..." >> "$LOG_FILE"
+if "$LOADER" version > /dev/null 2>&1; then
+    echo "[INFO] Built-in Kernel support detected." >> "$LOG_FILE"
+else
+    echo "[INFO] Built-in not found. Attempting to load LKM..." >> "$LOG_FILE"
+    if [ -f "$MODDIR/lkm/nomount.ko" ]; then
+    	if command -v ksud >/dev/null 2>&1; then
+    		ksud insmod "$MODDIR/lkm/nomount.ko" 2>> "$LOG_FILE"
+    	else
+        	insmod "$MODDIR/lkm/nomount.ko" 2>> "$LOG_FILE"
+        fi
+    fi
+
+    if ! "$LOADER" version > /dev/null 2>&1; then
+        echo "[FATAL] NoMount Internal API is missing/unresponsive." >> "$LOG_FILE"
+        touch "$MODDIR/disable"
+        sed -i "s|^description=.*|description=[❌ ERROR: Kernel not patched or module failed to load] \\\\n$BASE_DESC|" "$PROP_FILE"
+        rm -f "$BOOT_SEMAPHORE"
+        exit 1
+    fi
+    echo "[INFO] LKM loaded and initialized correctly." >> "$LOG_FILE"
 fi
 echo "[OK] Internal API responding properly." >> "$LOG_FILE"
 

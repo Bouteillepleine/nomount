@@ -1,6 +1,12 @@
 name: build lkm
 
 on:
+  workflow_call:
+    inputs:
+      build_all:
+        description: 'Force build all KMIs'
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       kmi_android12_5_10:
@@ -46,6 +52,7 @@ jobs:
       - name: Generate build matrix
         id: matrix
         env:
+          BUILD_ALL: ${{ inputs.build_all }}
           KMI_ANDROID12_5_10: ${{ inputs.kmi_android12_5_10 }}
           KMI_ANDROID13_5_10: ${{ inputs.kmi_android13_5_10 }}
           KMI_ANDROID13_5_15: ${{ inputs.kmi_android13_5_15 }}
@@ -55,17 +62,18 @@ jobs:
           KMI_ANDROID16_6_12: ${{ inputs.kmi_android16_6_12 }}
         run: |
           set -euo pipefail
-
-          matrix="$(jq -cn '[
-            {kmi: "android12-5.10", enabled: env.KMI_ANDROID12_5_10},
-            {kmi: "android13-5.10", enabled: env.KMI_ANDROID13_5_10},
-            {kmi: "android13-5.15", enabled: env.KMI_ANDROID13_5_15},
-            {kmi: "android14-5.15", enabled: env.KMI_ANDROID14_5_15},
-            {kmi: "android14-6.1", enabled: env.KMI_ANDROID14_6_1},
-            {kmi: "android15-6.6", enabled: env.KMI_ANDROID15_6_6},
-            {kmi: "android16-6.12", enabled: env.KMI_ANDROID16_6_12}
-          ] | map(select(.enabled == "true").kmi) as $selected
-            | if $selected == [] then map(.kmi) else $selected end')"
+          matrix="$(jq -cn '
+            (env.BUILD_ALL == "true") as $force_all |
+            [
+              {kmi: "android12-5.10", enabled: (if $force_all then true else (env.KMI_ANDROID12_5_10 == "true") end)},
+              {kmi: "android13-5.10", enabled: (if $force_all then true else (env.KMI_ANDROID13_5_10 == "true") end)},
+              {kmi: "android13-5.15", enabled: (if $force_all then true else (env.KMI_ANDROID13_5_15 == "true") end)},
+              {kmi: "android14-5.15", enabled: (if $force_all then true else (env.KMI_ANDROID14_5_15 == "true") end)},
+              {kmi: "android14-6.1",  enabled: (if $force_all then true else (env.KMI_ANDROID14_6_1 == "true") end)},
+              {kmi: "android15-6.6",  enabled: (if $force_all then true else (env.KMI_ANDROID15_6_6 == "true") end)},
+              {kmi: "android16-6.12", enabled: (if $force_all then true else (env.KMI_ANDROID16_6_12 == "true") end)}
+            ] | map(select(.enabled).kmi) as $selected
+              | if $selected == [] then map(.kmi) else $selected end')"
 
           echo "kmi=$matrix" >> "$GITHUB_OUTPUT"
 
