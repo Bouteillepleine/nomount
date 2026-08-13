@@ -440,22 +440,20 @@ async function loadModules() {
 
 async function loadModule(modId) {
     const modPath = `${MOD_DIR}/${modId}`;
-
     const script = `
         cd "${modPath}" || exit 0
         find -L system vendor product system_ext odm oem \\( -type c -o -name ".replace" \\) -exec sh -c '
             for f do
-                if [ "\${f##*/}" = ".replace" ]; then
-                    printf "/%s\\0" "\${f%/.replace}"
-                else
-                    printf "/%s\\0" "$f"
-                fi
+                v="$f"; [ "\${v#system/odm/}" != "$v" ] && v="odm/\${v#system/odm/}"
+                if [ "\${f##*/}" = ".replace" ]; then printf "/%s\\0" "\${v%/.replace}"
+                else printf "/%s\\0" "$v"; fi
             done
         ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule add --whiteout
         find -L system vendor product system_ext odm oem \\( -type f -o -type l \\) ! -name ".replace" -exec sh -c '
             mod="$1"; shift
             for f do
-                printf "/%s\\0%s/%s\\0" "$f" "$mod" "$f"
+                v="$f"; [ "\${v#system/odm/}" != "$v" ] && v="odm/\${v#system/odm/}"
+                printf "/%s\\0%s/%s\\0" "$v" "$mod" "$f"
             done
         ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule add
     `;
@@ -464,16 +462,13 @@ async function loadModule(modId) {
 
 async function unloadModule(modId) {
     const modPath = `${MOD_DIR}/${modId}`;
-    
     const script = `
         cd "${modPath}" || exit 0
         find -L system vendor product system_ext odm oem \\( -type f -o -type l -o -type c \\) -exec sh -c '
             for f do
-                if [ "\${f##*/}" = ".replace" ]; then
-                    printf "/%s\\0" "\${f%/.replace}"
-                else
-                    printf "/%s\\0" "$f"
-                fi
+                v="$f"; [ "\${v#system/odm/}" != "$v" ] && v="odm/\${v#system/odm/}"
+                if [ "\${f##*/}" = ".replace" ]; then printf "/%s\\0" "\${v%/.replace}"
+                else printf "/%s\\0" "$v"; fi
             done
         ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule del
     `;
