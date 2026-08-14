@@ -99,9 +99,17 @@ struct nomount_child_node {
     char name[]; 
 };
 
+struct nomount_child_array {
+    struct rcu_head rcu;
+    u16 capacity;
+    u16 count;
+    struct nomount_child_node *nodes[];
+};
+
 struct nomount_dir_node {
     struct rcu_head rcu;
-    struct idr children_idr;
+    struct nomount_child_array __rcu *children;
+    seqcount_t seq;
     u64 bloom_mask;
     union {
         struct inode *dir_inode;
