@@ -45,26 +45,27 @@ static __always_inline struct nomount_dir_node *nomount_get_dir_node(struct inod
 
 static __always_inline struct nomount_child_node *nomount_bsearch_child(struct nomount_child_array *arr, const char *name, size_t len, u32 hash)
 {
-    int l = 0, r = arr->count - 1;
-    while (l <= r) {
-        int m = l + (r - l) / 2;
-        struct nomount_child_node *c = arr->nodes[m];
-        if (c->name_hash < hash) { l = m + 1; }
-        else if (c->name_hash > hash) { r = m - 1; }
-        else {
-            int i = m;
-            while (i >= 0 && arr->nodes[i]->name_hash == hash) {
-                if (arr->nodes[i]->name_len == len && !memcmp(arr->nodes[i]->name, name, len)) return arr->nodes[i];
-                i--;
-            }
-            i = m + 1;
-            while (i < arr->count && arr->nodes[i]->name_hash == hash) {
-                if (arr->nodes[i]->name_len == len && !memcmp(arr->nodes[i]->name, name, len)) return arr->nodes[i];
-                i++;
-            }
-            break;
-        }
+    int l = 0, r = arr->count;
+    u32 *hashes = arr->hashes;
+
+    if (unlikely(r <= 0)) return NULL;
+
+    __builtin_prefetch(&hashes[r >> 1], 0, 3);
+    while (l < r) {
+        int m = l + ((r - l) >> 1);
+        if (m + 1 < r) __builtin_prefetch(&hashes[(m + 1 + r) >> 1], 0, 1);
+        if (l < m) __builtin_prefetch(&hashes[(l + m) >> 1], 0, 1);
+        if (hashes[m] < hash) l = m + 1;
+        else r = m;
     }
+
+    while (l < arr->count) {
+        struct nomount_child_node *c = arr->nodes[l];
+        if (unlikely(hashes[l] != hash)) break;
+        if (c->name_len == len && !memcmp(c->name, name, len)) return c;
+        l++;
+    }
+
     return NULL;
 }
 
@@ -109,13 +110,28 @@ static void _name(struct rcu_head *head) { \
     __VA_ARGS__ \
     kmem_cache_free(_cache, obj); \
 }
-
 NM_DEFINE_RCU_FREE(nm_iop_rcu_free, struct nm_iop, nm_iop_cachep)
 NM_DEFINE_RCU_FREE(nm_fop_rcu_free, struct nm_fop, nm_fop_cachep)
-NM_DEFINE_RCU_FREE(nm_dir_rcu_free, struct nomount_dir_node, nm_dir_cachep,
-    struct nomount_child_array *arr = obj->children; \
-    if (arr) { int i; for (i = 0; i < arr->count; i++) kfree(arr->nodes[i]); kfree(arr); } \
-)
+
+static void nm_dir_rcu_free(struct rcu_head *head)
+{
+    struct nomount_dir_node *dir = container_of(head, struct nomount_dir_node, rcu);
+    struct nomount_child_array *arr = dir->children;
+    if (arr) {
+        int i; for (i = 0; i < arr->count; i++) kfree(arr->nodes[i]);
+        kfree(arr->hashes);
+        kfree(arr->nodes);
+        kfree(arr);
+    }
+}
+
+static void nm_child_array_rcu_free(struct rcu_head *head)
+{
+    struct nomount_child_array *arr = container_of(head, struct nomount_child_array, rcu);
+    kfree(arr->hashes);
+    kfree(arr->nodes);
+    kfree(arr);
+}
 
 struct nomount_proxy_ctx {
     struct dir_context ctx;
@@ -1027,10 +1043,10 @@ static struct nomount_dir_node *__nomount_alloc_dir_node(struct inode *inode)
 
 static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, struct nomount_rule *rule, const char *name, size_t name_len)
 {
-    struct nomount_child_node *new_child;
+    struct nomount_child_node *new_child, **new_node_ptrs;
     struct nomount_child_array *old_arr, *new_arr;
     int old_count = 0, capacity = 0, new_cap, i, pos = 0;
-    u32 target_hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, name_len);
+    u32 *new_hashes, target_hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, name_len);
 
     if (unlikely(!dir_node)) return;
     rule->parent_dir = dir_node;
@@ -1051,12 +1067,16 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
     if (old_arr) {
         old_count = old_arr->count;
         capacity = old_arr->capacity;
-        while (pos < old_count && old_arr->nodes[pos]->name_hash < target_hash) pos++;
+        while (pos < old_count && old_arr->hashes[pos] < target_hash) pos++;
     }
 
     if (old_count < capacity) {
         write_seqcount_begin(&dir_node->seq);
-        if (pos < old_count) memmove(&old_arr->nodes[pos + 1], &old_arr->nodes[pos], (old_count - pos) * sizeof(void *));
+        if (pos < old_count) {
+            memmove(&old_arr->hashes[pos + 1], &old_arr->hashes[pos], (old_count - pos) * sizeof(u32));
+            memmove(&old_arr->nodes[pos + 1], &old_arr->nodes[pos], (old_count - pos) * sizeof(void *));
+        }
+        old_arr->hashes[pos] = target_hash;
         old_arr->nodes[pos] = new_child;
         old_arr->count++;
         dir_node->bloom_mask |= (1ULL << (target_hash & 63));
@@ -1065,21 +1085,38 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
     }
 
     new_cap = capacity == 0 ? 4 : capacity * 2;
-    new_arr = kmalloc(sizeof(*new_arr) + new_cap * sizeof(void *), GFP_KERNEL);
+    new_arr = kmalloc(sizeof(*new_arr), GFP_KERNEL);
     if (!new_arr) { kfree(new_child); return; }
+
+    new_hashes = kmalloc(new_cap * sizeof(u32), GFP_KERNEL);
+    new_node_ptrs = kmalloc(new_cap * sizeof(void *), GFP_KERNEL);
+    if (!new_hashes || !new_node_ptrs) {
+        kfree(new_arr); kfree(new_hashes);
+        kfree(new_node_ptrs); kfree(new_child);
+        return;
+    }
 
     new_arr->capacity = new_cap;
     new_arr->count = old_count + 1;
+    new_arr->hashes = new_hashes;
+    new_arr->nodes = new_node_ptrs;
+    for (i = 0; i < pos; i++) {
+        new_arr->hashes[i] = old_arr->hashes[i];
+        new_arr->nodes[i] = old_arr->nodes[i];
+    }
 
-    for (i = 0; i < pos; i++) new_arr->nodes[i] = old_arr->nodes[i];
+    new_arr->hashes[pos] = target_hash;
     new_arr->nodes[pos] = new_child;
-    for (i = pos; i < old_count; i++) new_arr->nodes[i + 1] = old_arr->nodes[i];
+    for (i = pos; i < old_count; i++) {
+        new_arr->hashes[i + 1] = old_arr->hashes[i];
+        new_arr->nodes[i + 1] = old_arr->nodes[i];
+    }
 
     write_seqcount_begin(&dir_node->seq);
     rcu_assign_pointer(dir_node->children, new_arr);
     dir_node->bloom_mask |= (1ULL << (target_hash & 63));
     write_seqcount_end(&dir_node->seq);
-    if (old_arr) kfree_rcu(old_arr, rcu);
+    if (old_arr) call_rcu(&old_arr->rcu, nm_child_array_rcu_free);
 }
 
 static void __nomount_delete_child_locked(struct nomount_rule *rule)
@@ -1109,16 +1146,19 @@ static void __nomount_delete_child_locked(struct nomount_rule *rule)
         rcu_assign_pointer(dir_node->children, NULL);
         dir_node->bloom_mask = 0;
         write_seqcount_end(&dir_node->seq);
-        kfree_rcu(old_arr, rcu);
+        call_rcu(&old_arr->rcu, nm_child_array_rcu_free);
         kfree_rcu(child_to_free, rcu);
         return;
     }
 
     write_seqcount_begin(&dir_node->seq);
-    if (target_idx < old_count - 1) memmove(&old_arr->nodes[target_idx], &old_arr->nodes[target_idx + 1], (old_count - 1 - target_idx) * sizeof(void *));
+    if (target_idx < old_count - 1) {
+        memmove(&old_arr->hashes[target_idx], &old_arr->hashes[target_idx + 1], (old_count - 1 - target_idx) * sizeof(u32));
+        memmove(&old_arr->nodes[target_idx], &old_arr->nodes[target_idx + 1], (old_count - 1 - target_idx) * sizeof(void *));
+    }
     old_arr->count--;
 
-    for (i = 0; i < old_arr->count; i++) mask |= (1ULL << (old_arr->nodes[i]->name_hash & 63));
+    for (i = 0; i < old_arr->count; i++) mask |= (1ULL << (old_arr->hashes[i] & 63));
     dir_node->bloom_mask = mask;
 
     write_seqcount_end(&dir_node->seq);
