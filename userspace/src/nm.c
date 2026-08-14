@@ -9,59 +9,62 @@ void c_main(long *sp) {
     long argc = *sp;
     char **argv = (char **)(sp + 1);
     int exit_code = 1;
-    if (argc < 2) goto help;
 
     struct nm_payload *payload = (void *)(((long)sp - 16384) & ~4095L);
     enum nm_cli_action action = ACTION_NONE;
     int data_start_idx = 2;
     int is_json = 0;
     int is_whiteout = 0;
-
-    const char *c1 = argv[1];
-    if (strcmp(c1, "rule") == 0 && argc >= 3) {
-        const char *c2 = argv[2];
-        if (strcmp(c2, "add") == 0) action = ACTION_RULE_ADD;
-        else if (strcmp(c2, "del") == 0) action = ACTION_RULE_DEL;
-        else if (strcmp(c2, "list") == 0) action = ACTION_RULE_LIST;
-        else if (strcmp(c2, "clear") == 0) action = ACTION_RULE_CLEAR;
-        data_start_idx = 3;
-    } else if (strcmp(c1, "uid") == 0 && argc >= 3) {
-        const char *c2 = argv[2];
-        if (strcmp(c2, "add") == 0) action = ACTION_UID_ADD;
-        else if (strcmp(c2, "del") == 0) action = ACTION_UID_DEL;
-        else if (strcmp(c2, "list") == 0) action = ACTION_UID_LIST;
-        else if (strcmp(c2, "clear") == 0) action = ACTION_UID_CLEAR;
-        data_start_idx = 3;
-    } else if (strcmp(c1, "clear") == 0) {
-        if (argc >= 3 && strcmp(argv[2], "rules") == 0) action = ACTION_RULE_CLEAR;
-        else if (argc >= 3 && strcmp(argv[2], "uid") == 0) action = ACTION_UID_CLEAR;
-        else if (argc >= 3 && strcmp(argv[2], "all") == 0) action = ACTION_CLEAR_ALL;
-        else action = ACTION_CLEAR_ALL;
-        data_start_idx = (argc >= 3) ? 3 : 2;
-    }
-    /* legacy commands */
-    else if (strcmp(c1, "add") == 0 || strcmp(c1, "a") == 0) { action = ACTION_RULE_ADD; }
-    else if (strcmp(c1, "w") == 0 || strcmp(c1, "whiteout") == 0) { action = ACTION_RULE_ADD; is_whiteout = 1; }
-    else if (strcmp(c1, "del") == 0 || strcmp(c1, "d") == 0) { action = ACTION_RULE_DEL; }
-    else if (strcmp(c1, "block") == 0 || strcmp(c1, "b") == 0) { action = ACTION_UID_ADD; }
-    else if (strcmp(c1, "unblock") == 0 || strcmp(c1, "u") == 0) { action = ACTION_UID_DEL; }
-    else if (strcmp(c1, "list") == 0 || strcmp(c1, "l") == 0) {
-        if (argc >= 3 && strcmp(argv[2], "uid") == 0) { action = ACTION_UID_LIST; data_start_idx = 3; }
-        else { action = ACTION_RULE_LIST; }
-    } else if (strcmp(c1, "version") == 0 || strcmp(c1, "v") == 0 || strcmp(c1, "-v") == 0) { action = ACTION_VERSION; }
-
     unsigned int target_uid = 0;
-    const char *p_args[argc]; 
+
+    if (argc >= 2) {
+        const char *c1 = argv[1];
+        if (strcmp(c1, "rule") == 0 && argc >= 3) {
+            const char *c2 = argv[2];
+            if (strcmp(c2, "add") == 0) action = ACTION_RULE_ADD;
+            else if (strcmp(c2, "del") == 0) action = ACTION_RULE_DEL;
+            else if (strcmp(c2, "list") == 0) action = ACTION_RULE_LIST;
+            else if (strcmp(c2, "clear") == 0) action = ACTION_RULE_CLEAR;
+            data_start_idx = 3;
+        } else if (strcmp(c1, "uid") == 0 && argc >= 3) {
+            const char *c2 = argv[2];
+            if (strcmp(c2, "add") == 0) action = ACTION_UID_ADD;
+            else if (strcmp(c2, "del") == 0) action = ACTION_UID_DEL;
+            else if (strcmp(c2, "list") == 0) action = ACTION_UID_LIST;
+            else if (strcmp(c2, "clear") == 0) action = ACTION_UID_CLEAR;
+            data_start_idx = 3;
+        } else if (strcmp(c1, "clear") == 0) {
+            if (argc >= 3 && strcmp(argv[2], "rules") == 0) action = ACTION_RULE_CLEAR;
+            else if (argc >= 3 && strcmp(argv[2], "uid") == 0) action = ACTION_UID_CLEAR;
+            else if (argc >= 3 && strcmp(argv[2], "all") == 0) action = ACTION_CLEAR_ALL;
+            else action = ACTION_CLEAR_ALL;
+            data_start_idx = (argc >= 3) ? 3 : 2;
+        }
+        /* legacy commands */
+        else if (strcmp(c1, "add") == 0 || strcmp(c1, "a") == 0) { action = ACTION_RULE_ADD; }
+        else if (strcmp(c1, "w") == 0 || strcmp(c1, "whiteout") == 0) { action = ACTION_RULE_ADD; is_whiteout = 1; }
+        else if (strcmp(c1, "del") == 0 || strcmp(c1, "d") == 0) { action = ACTION_RULE_DEL; }
+        else if (strcmp(c1, "block") == 0 || strcmp(c1, "b") == 0) { action = ACTION_UID_ADD; }
+        else if (strcmp(c1, "unblock") == 0 || strcmp(c1, "u") == 0) { action = ACTION_UID_DEL; }
+        else if (strcmp(c1, "list") == 0 || strcmp(c1, "l") == 0) {
+            if (argc >= 3 && strcmp(argv[2], "uid") == 0) { action = ACTION_UID_LIST; data_start_idx = 3; }
+            else { action = ACTION_RULE_LIST; }
+        } else if (strcmp(c1, "version") == 0 || strcmp(c1, "v") == 0 || strcmp(c1, "-v") == 0) { action = ACTION_VERSION; }
+    }
+
+    const char *p_args[argc > 0 ? argc : 1];
     int p_count = 0;
 
-    for (int i = data_start_idx; i < argc; i++) {
-        if (strcmp(argv[i], "--uid") == 0 && i + 1 < argc) {
-            const char *s = argv[++i];
-            while (*s) target_uid = (target_uid << 3) + (target_uid << 1) + (*s++ - '0');
-        } 
-        else if (strcmp(argv[i], "--json") == 0 || strcmp(argv[i], "json") == 0) { is_json = 1; }
-        else if (strcmp(argv[i], "--whiteout") == 0) { is_whiteout = 1; }
-        else { p_args[p_count++] = argv[i]; }
+    if (argc >= 2) {
+        for (int i = data_start_idx; i < argc; i++) {
+            if (strcmp(argv[i], "--uid") == 0 && i + 1 < argc) {
+                const char *s = argv[++i];
+                while (*s) target_uid = (target_uid << 3) + (target_uid << 1) + (*s++ - '0');
+            } 
+            else if (strcmp(argv[i], "--json") == 0 || strcmp(argv[i], "json") == 0) { is_json = 1; }
+            else if (strcmp(argv[i], "--whiteout") == 0) { is_whiteout = 1; }
+            else { p_args[p_count++] = argv[i]; }
+        }
     }
 
     switch (action) {
@@ -216,7 +219,6 @@ void c_main(long *sp) {
             break;
         }
 
-help:
         case ACTION_NONE:
         default: {
             print_str("Usage:\n"
