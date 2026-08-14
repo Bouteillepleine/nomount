@@ -289,10 +289,12 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
     if (unlikely(!nm_iop || !dir_node))
         goto do_real_lookup;
 
+    down_read(&nomount_rwsem);
     if (nomount_get_rule_info(dir_node, name, len, full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, len), &rule_info, true)) {
         if (nomount_is_uid_blocked(current_uid().val)) {
             if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
             if (d_is_negative(dentry)) d_drop(dentry);
+            up_read(&nomount_rwsem);
             if (nm_iop->orig_iop->lookup) {
                 res = nm_iop->orig_iop->lookup(dir, dentry, flags);
                 if (!IS_ERR(res)) nomount_hijack_dentry_ops(res ? res : dentry);
@@ -305,6 +307,7 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
             nomount_hijack_dentry_ops(dentry);
             d_add(dentry, NULL); 
             if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
+            up_read(&nomount_rwsem);
             return NULL;
         }
 
@@ -313,11 +316,13 @@ static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *
             if (likely(new_inode)) {
                 res = d_splice_alias(new_inode, dentry);
                 if (!IS_ERR(res)) nomount_hijack_dentry_ops(res ? res : dentry);
+                up_read(&nomount_rwsem);
                 return res;
             }
         }
         if (rule_info.r_path.dentry) path_put(&rule_info.r_path);
     }
+    up_read(&nomount_rwsem);
 
 do_real_lookup:
     if (nm_iop && nm_iop->orig_iop && nm_iop->orig_iop->lookup) {
