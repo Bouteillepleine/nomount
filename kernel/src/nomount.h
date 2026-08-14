@@ -101,9 +101,10 @@ struct nomount_child_node {
 
 struct nomount_child_array {
     struct rcu_head rcu;
-    u16 capacity;
-    u16 count;
-    struct nomount_child_node *nodes[];
+    int count;
+    int capacity;
+    u32 *hashes;
+    struct nomount_child_node **nodes;
 };
 
 struct nomount_dir_node {
