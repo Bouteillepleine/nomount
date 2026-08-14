@@ -538,14 +538,14 @@ again:
         remaining -= copied;
     }
 
-    get_file(shmem_file);
-    if (vma->vm_file) fput(vma->vm_file);
-    vma->vm_file = shmem_file;
     ret = shmem_file->f_op->mmap(shmem_file, vma);
-
-    if (ret != 0) vma->vm_file = file;
-    else file_inode(file)->i_flags &= ~S_PRIVATE;
-    fput(shmem_file);
+    if (ret == 0) {
+        fput(vma->vm_file);
+        vma->vm_file = shmem_file;
+        file_inode(file)->i_flags &= ~S_PRIVATE;
+    } else {
+        fput(shmem_file);
+    }
 
     return ret;
 }
