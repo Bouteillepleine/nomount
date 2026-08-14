@@ -23,6 +23,16 @@ else
   ui_print "- Detected Kernel: $KVER (Custom/Unknown branch)"
 fi
 
+install_lkm() {
+  local module_path="$1"
+  if command -v ksud >/dev/null 2>&1; then
+    ksud insmod "$module_path"
+    return $?
+  fi
+  insmod "$module_path"
+  return $?
+}
+
 NOMOUNT_LOADED=false
 OLD_LKM_UNLOADED=false
 RESTORED_OLD_KO=false
@@ -49,7 +59,7 @@ else
   EXACT_MATCH="$MODPATH/lkm/nomount-${AKVER}-${KVER}.ko"
   if [ -n "$AKVER" ] && [ -f "$EXACT_MATCH" ]; then
     ui_print "  [*] Trying exact match: $(basename "$EXACT_MATCH")"
-    if insmod "$EXACT_MATCH" && "$MODPATH/bin/nm" version > /dev/null 2>&1; then
+    if install_lkm "$EXACT_MATCH" && "$MODPATH/bin/nm" version > /dev/null 2>&1; then
       mv "$EXACT_MATCH" "$MODPATH/lkm/nomount.ko"
       NOMOUNT_LOADED=true
     else
@@ -61,7 +71,7 @@ else
     for mod in "$MODPATH"/lkm/nomount*-${KVER}.ko; do
       if [ ! -f "$mod" ] || [ "$mod" = "$EXACT_MATCH" ]; then continue; fi
       ui_print "  [*] Trying fallback: $(basename "$mod")"
-      if insmod "$mod" && "$MODPATH/bin/nm" version > /dev/null 2>&1; then
+      if install_lkm "$mod" && "$MODPATH/bin/nm" version > /dev/null 2>&1; then
         mv "$mod" "$MODPATH/lkm/nomount.ko"
         NOMOUNT_LOADED=true
         break
@@ -76,7 +86,7 @@ else
     ui_print "  [!] New modules failed. Restoring previous working LKM..."
     mkdir -p "$MODPATH/lkm"
     cp "$OLD_MODULE_KO" "$MODPATH/lkm/nomount.ko"
-    if insmod "$MODPATH/lkm/nomount.ko" && "$MODPATH/bin/nm" version > /dev/null 2>&1; then
+    if install_lkm "$MODPATH/lkm/nomount.ko" && "$MODPATH/bin/nm" version > /dev/null 2>&1; then
       NOMOUNT_LOADED=true
       RESTORED_OLD_KO=true
     else
