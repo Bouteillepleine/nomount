@@ -531,6 +531,11 @@ static int nm_mmap(struct file *file, struct vm_area_struct *vma)
         remaining -= copied;
     }
 
+    if (remaining) {
+        fput(shmem_file);
+        return -EIO;
+    }
+
     get_file(shmem_file);
     if (vma->vm_file) fput(vma->vm_file);
     vma->vm_file = shmem_file;
