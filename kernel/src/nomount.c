@@ -512,7 +512,7 @@ static ssize_t nm_write_iter(struct kiocb *iocb, struct iov_iter *from)
 static int nm_mmap(struct file *file, struct vm_area_struct *vma)
 {
     struct file *shmem_file, *real_file = file->private_data;
-    loff_t pos_in = 0, pos_out = 0, size, remaining;
+    loff_t pos_in = 0, pos_out = 0, size, remaining, copied;
     int ret, flags = 0;
     if (!real_file || !real_file->f_op->mmap) return -ENODEV;
 
@@ -530,7 +530,7 @@ static int nm_mmap(struct file *file, struct vm_area_struct *vma)
     remaining = size;
     while (remaining > 0) {
 again:
-        loff_t copied = vfs_copy_file_range(real_file, pos_in, shmem_file, pos_out, remaining, flags);
+        copied = vfs_copy_file_range(real_file, pos_in, shmem_file, pos_out, remaining, flags);
         if (copied == -EXDEV) { flags = COPY_FILE_SPLICE; goto again; }
         if (copied <= 0) { fput(shmem_file); return copied < 0 ? (int)copied : -EIO; }
         pos_in += copied;
@@ -540,7 +540,7 @@ again:
 
     ret = shmem_file->f_op->mmap(shmem_file, vma);
     if (ret == 0) {
-        fput(vma->vm_file);
+        if (vma->vm_file) fput(vma->vm_file);
         vma->vm_file = shmem_file;
         file_inode(file)->i_flags &= ~S_PRIVATE;
     } else {
