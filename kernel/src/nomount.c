@@ -527,7 +527,7 @@ static int nm_mmap(struct file *file, struct vm_area_struct *vma)
 again:
         loff_t copied = vfs_copy_file_range(real_file, pos_in, shmem_file, pos_out, remaining, flags);
         if (copied == -EXDEV) { flags = COPY_FILE_SPLICE; goto again; }
-        if (copied <= 0) return (int)copied;
+        if (copied <= 0) { fput(shmem_file); return copied < 0 ? (int)copied : -EIO; }
         pos_in += copied;
         pos_out += copied;
         remaining -= copied;
