@@ -119,17 +119,14 @@ static void nm_dir_rcu_free(struct rcu_head *head)
     struct nomount_child_array *arr = dir->children;
     if (arr) {
         int i; for (i = 0; i < arr->count; i++) kfree(arr->nodes[i]);
-        kfree(arr->hashes);
-        kfree(arr->nodes);
         kfree(arr);
     }
+    kmem_cache_free(nm_dir_cachep, dir);
 }
 
 static void nm_child_array_rcu_free(struct rcu_head *head)
 {
     struct nomount_child_array *arr = container_of(head, struct nomount_child_array, rcu);
-    kfree(arr->hashes);
-    kfree(arr->nodes);
     kfree(arr);
 }
 
@@ -1043,10 +1040,10 @@ static struct nomount_dir_node *__nomount_alloc_dir_node(struct inode *inode)
 
 static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, struct nomount_rule *rule, const char *name, size_t name_len)
 {
-    struct nomount_child_node *new_child, **new_node_ptrs;
+    struct nomount_child_node *new_child;
     struct nomount_child_array *old_arr, *new_arr;
     int old_count = 0, capacity = 0, new_cap, i, pos = 0;
-    u32 *new_hashes, target_hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, name_len);
+    u32 target_hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, name_len);
 
     if (unlikely(!dir_node)) return;
     rule->parent_dir = dir_node;
@@ -1085,21 +1082,13 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
     }
 
     new_cap = capacity == 0 ? 4 : capacity * 2;
-    new_arr = kmalloc(sizeof(*new_arr), GFP_KERNEL);
+    new_arr = kmalloc(sizeof(struct nomount_child_array) + (new_cap * sizeof(u32)) + (new_cap * sizeof(void *)), GFP_KERNEL);
     if (!new_arr) { kfree(new_child); return; }
 
-    new_hashes = kmalloc(new_cap * sizeof(u32), GFP_KERNEL);
-    new_node_ptrs = kmalloc(new_cap * sizeof(void *), GFP_KERNEL);
-    if (!new_hashes || !new_node_ptrs) {
-        kfree(new_arr); kfree(new_hashes);
-        kfree(new_node_ptrs); kfree(new_child);
-        return;
-    }
-
+    new_arr->hashes = (u32 *)(new_arr + 1);
+    new_arr->nodes = (struct nomount_child_node **)(new_arr->hashes + new_cap);
     new_arr->capacity = new_cap;
     new_arr->count = old_count + 1;
-    new_arr->hashes = new_hashes;
-    new_arr->nodes = new_node_ptrs;
     for (i = 0; i < pos; i++) {
         new_arr->hashes[i] = old_arr->hashes[i];
         new_arr->nodes[i] = old_arr->nodes[i];
