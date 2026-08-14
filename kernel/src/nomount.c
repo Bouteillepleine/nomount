@@ -531,6 +531,8 @@ static int nm_mmap(struct file *file, struct vm_area_struct *vma)
     while (remaining > 0) {
         loff_t copied = vfs_copy_file_range(real_file, pos_in, shmem_file, pos_out, remaining, 0);
         if (copied <= 0) break;
+        pos_in += copied;
+        pos_out += copied;
         remaining -= copied;
     }
 
