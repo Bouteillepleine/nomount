@@ -520,9 +520,9 @@ static int nm_mmap(struct file *file, struct vm_area_struct *vma)
     if (size <= 0) return -EINVAL;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
-    shmem_file = shmem_file_setup("nm_shmem", size, vma->flags);
+    shmem_file = shmem_file_setup("nm_shmem", size, (typeof(vma->flags)){0});
 #else
-    shmem_file = shmem_file_setup("nm_shmem", size, vma->vm_flags);
+    shmem_file = shmem_file_setup("nm_shmem", size, (typeof(vma->vm_flags)){0});
 #endif
     if (IS_ERR(shmem_file)) return PTR_ERR(shmem_file);
     file_inode(shmem_file)->i_flags |= S_PRIVATE;
