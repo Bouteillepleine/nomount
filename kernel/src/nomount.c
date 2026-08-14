@@ -772,13 +772,28 @@ static int nm_d_revalidate(struct dentry *dentry, unsigned int flags)
         struct nm_inode_info *parent_info = parent_inode->i_private;
         if (parent_info) parent_dir = parent_info->dir_node;
     }
-    if (!parent_dir) return injected ? 0 : 1;
+    
+    if (!parent_dir) {
+        if (injected) return 0;
+        if (d_is_negative(dentry)) { 
+            if (flags & LOOKUP_RCU) return -ECHILD;
+            d_drop(dentry); 
+            return 0; 
+        }
+        return 1;
+    }
 
     hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, dentry->d_name.name, dentry->d_name.len);
     if (nomount_get_rule_info(parent_dir, dentry->d_name.name, dentry->d_name.len, hash, &rule_info, false)) {
         if (rule_info.flags & NM_FLAG_WHITEOUT) return d_is_negative(dentry) ? 1 : 0;
         if (nomount_is_uid_blocked(current_uid().val)) return injected ? 0 : 1;
         return injected ? 1 : 0;
+    }
+
+    if (d_is_negative(dentry)) {
+        if (flags & LOOKUP_RCU) return -ECHILD;
+        d_drop(dentry);
+        return 0;
     }
 
     return injected ? 0 : 1;
