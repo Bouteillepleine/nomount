@@ -1043,7 +1043,7 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
 {
     struct nomount_child_node *new_child;
     struct nomount_child_array *old_arr, *new_arr;
-    int old_count = 0, capacity = 0, i, pos = 0;
+    int old_count = 0, capacity = 0, new_cap, i, pos = 0;
     u32 target_hash = full_name_hash((const void *)(unsigned long)NOMOUNT_MAGIC_SIG, name, name_len);
 
     if (unlikely(!dir_node)) return;
@@ -1078,7 +1078,7 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
         return;
     }
 
-    int new_cap = capacity == 0 ? 4 : capacity * 2;
+    new_cap = capacity == 0 ? 4 : capacity * 2;
     new_arr = kmalloc(sizeof(*new_arr) + new_cap * sizeof(void *), GFP_KERNEL);
     if (!new_arr) { kfree(new_child); return; }
 
