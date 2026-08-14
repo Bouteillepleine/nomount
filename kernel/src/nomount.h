@@ -111,6 +111,7 @@ struct nomount_dir_node {
     struct nomount_child_array __rcu *children;
     seqcount_t seq;
     u64 bloom_mask;
+    struct inode *v_inode;
     union {
         struct inode *dir_inode;
         struct nomount_rule *owner_rule;
@@ -154,7 +155,7 @@ static const struct inode_operations nm_dir_iops;
 /*** forward declarations ***/
 static struct dentry *nomount_hijacked_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags);
 static int nomount_hijacked_iterate_dir(struct file *file, struct dir_context *ctx);
-static void nomount_hijack_dentry_ops(struct dentry *dentry, struct nm_iop *nm_iop);
+static void nomount_hijack_dentry_ops(struct dentry *dentry);
 static void nm_free_rule(struct nomount_rule *rule);
 
 /* =====================================================================
