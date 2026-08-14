@@ -110,18 +110,18 @@ static NM_ACTOR_RET nomount_actor_proxy(struct dir_context *ctx, const char *nam
     if (!(proxy->dir_node->bloom_mask & (1ULL << (hash & 63))))
         goto do_real_actor;
 
-    rcu_read_lock();
+    down_read(&nomount_rwsem);
     idr_for_each_entry(&proxy->dir_node->children_idr, child, id) {
         if (child->name_hash == hash && child->name_len == namelen && memcmp(child->name, name, namelen) == 0) {
             if (child->rule->target_uid == 0 || child->rule->target_uid == current_uid().val) {
-                rcu_read_unlock();
+                up_read(&nomount_rwsem);
                 proxy->ctx.pos = offset;
                 return NM_ACTOR_CONTINUE;
             }
             break; 
         }
     }
-    rcu_read_unlock();
+    up_read(&nomount_rwsem);
 
 do_real_actor:
     proxy->orig_ctx->pos = proxy->ctx.pos;
@@ -141,7 +141,7 @@ static inline void nomount_emit_virtual_children(struct dir_context *ctx, struct
     if (!nm_is_virtual_pos(ctx->pos)) ctx->pos = nm_pack_pos(0);
     id = nm_unpack_pos(ctx->pos);
 
-    rcu_read_lock();
+    down_read(&nomount_rwsem);
     idr_for_each_entry_continue(&dir_node->children_idr, child, id) {
         ctx->pos = nm_pack_pos(id);
         if (child->rule->target_uid == 0 || child->rule->target_uid == current_uid().val) {
@@ -150,7 +150,7 @@ static inline void nomount_emit_virtual_children(struct dir_context *ctx, struct
         }
         ctx->pos = nm_pack_pos(id + 1);
     }
-    rcu_read_unlock();
+    up_read(&nomount_rwsem);
 }
 
 static struct inode *nomount_create_new_inode(struct super_block *virtual_sb, struct nm_rule_info *rule_info)
@@ -1258,7 +1258,7 @@ static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len,
     rule = nm_alloc_rule(v_path, r_path, v_len, r_len, flags, target_uid);
     if (IS_ERR(rule)) return PTR_ERR(rule);
 
-    mutex_lock(&nomount_write_mutex);
+    down_write(&nomount_rwsem);
     hash_for_each_possible(nomount_rules_ht, existing, vpath_node, rule->v_hash) {
         if (existing->v_hash == rule->v_hash && existing->v_len == v_len && existing->target_uid == target_uid &&
                 memcmp(nm_get_vpath(existing), nm_get_vpath(rule), v_len) == 0) {
@@ -1276,7 +1276,7 @@ static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len,
 
     err = nomount_generate_virtual_topology(rule);
     if (err != 0) {
-        mutex_unlock(&nomount_write_mutex);
+        up_write(&nomount_rwsem);
         nm_free_rule(rule); 
         synchronize_rcu();
         hlist_for_each_entry_safe(victim_rule, tmp, &victims, vpath_node) {
@@ -1286,7 +1286,7 @@ static int __nomount_add_rule(const char *v_path, const char *r_path, u16 v_len,
     }
 
     hash_add_rcu(nomount_rules_ht, &rule->vpath_node, rule->v_hash);
-    mutex_unlock(&nomount_write_mutex);
+    up_write(&nomount_rwsem);
 
     if (!hlist_empty(&victims)) {
         synchronize_rcu();
@@ -1393,7 +1393,7 @@ static int nm_process_payload(unsigned long user_addr)
 
         case NM_CMD_DEL_RULE: {
             HLIST_HEAD(r_victims);    
-            mutex_lock(&nomount_write_mutex);
+            down_write(&nomount_rwsem);
             if (payload->data_size > 0) {
                 while (payload->arg1 + 6 <= payload->data_size) {
                     payload->target_uid = get_unaligned((const u32 *)(payload->buffer + payload->arg1));
@@ -1406,7 +1406,7 @@ static int nm_process_payload(unsigned long user_addr)
             } else {
                 __nomount_del_rule(payload->buffer, payload->v_len, payload->target_uid, &r_victims);
             }
-            mutex_unlock(&nomount_write_mutex);
+            up_write(&nomount_rwsem);
             if (!hlist_empty(&r_victims)) {
                 struct nomount_rule *rule; struct hlist_node *tmp;
                 synchronize_rcu();
@@ -1421,21 +1421,21 @@ static int nm_process_payload(unsigned long user_addr)
 
         case NM_CMD_ADD_UID:
             if (!nomount_is_uid_blocked(payload->target_uid)) {
-                mutex_lock(&nomount_write_mutex);
+                down_write(&nomount_rwsem);
                 if (idr_alloc(&nomount_uid_idr, (void *)8, payload->target_uid, payload->target_uid + 1, GFP_KERNEL) >= 0) {
                     static_branch_enable(&nomount_active_uids);
                     nm_info("Successfully added blocked UID: %u\n", payload->target_uid);
                 } else {
                     payload->status = -ENOMEM;
                 }
-                mutex_unlock(&nomount_write_mutex);
+                up_write(&nomount_rwsem);
             } else {
                 payload->status = -EEXIST;
             }
             break;
 
         case NM_CMD_DEL_UID:
-            mutex_lock(&nomount_write_mutex);
+            down_write(&nomount_rwsem);
             if (idr_find(&nomount_uid_idr, payload->target_uid)) {
                 idr_remove(&nomount_uid_idr, payload->target_uid);
                 if (idr_is_empty(&nomount_uid_idr)) static_branch_disable(&nomount_active_uids);
@@ -1443,7 +1443,7 @@ static int nm_process_payload(unsigned long user_addr)
             } else {
                 payload->status = -ENOENT;
             }
-            mutex_unlock(&nomount_write_mutex);
+            up_write(&nomount_rwsem);
             break;
 
         case NM_CMD_CLEAR_ALL:
@@ -1454,9 +1454,9 @@ static int nm_process_payload(unsigned long user_addr)
             if (payload->cmd == NM_CMD_CLEAR_UIDS) clear_flags = NM_CLEAR_UIDS;
             if (payload->cmd == NM_CMD_CLEAR_RULES) clear_flags = NM_CLEAR_RULES;
 
-            mutex_lock(&nomount_write_mutex);
+            down_write(&nomount_rwsem);
             __nomount_clear_all(clear_flags);
-            mutex_unlock(&nomount_write_mutex);
+            up_write(&nomount_rwsem);
             nm_info("Executed selective clear (cmd: %u)\n", payload->cmd);
             break;
         }
@@ -1567,9 +1567,9 @@ static void __exit nomount_exit(void)
 {
     unregister_key_type(&nm_key_type);
 
-    mutex_lock(&nomount_write_mutex);
+    down_write(&nomount_rwsem);
     __nomount_clear_all(NM_CLEAR_UIDS | NM_CLEAR_RULES | NM_CLEAR_EXIT);
-    mutex_unlock(&nomount_write_mutex);
+    up_write(&nomount_rwsem);
     rcu_barrier();
     kmem_cache_destroy(nm_dir_cachep);
     kmem_cache_destroy(nm_inode_cachep);

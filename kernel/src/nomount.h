@@ -5,6 +5,7 @@
 #include <linux/idr.h>
 #include <linux/list.h>
 #include <linux/hashtable.h>
+#include <linux/rwsem.h>
 #include <linux/atomic.h>
 #include <linux/file.h>
 #include <linux/key-type.h>
@@ -39,7 +40,7 @@
 static DEFINE_HASHTABLE(nomount_rules_ht, NOMOUNT_HASH_BITS);
 static LIST_HEAD(nomount_sb_list);
 static DEFINE_IDR(nomount_uid_idr);
-static DEFINE_MUTEX(nomount_write_mutex);
+static DECLARE_RWSEM(nomount_rwsem);
 
 /* * Helpers to dynamically calculate the memory address of the strings */
 #define nm_get_vpath(rule) ((rule)->paths)
