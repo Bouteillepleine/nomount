@@ -51,7 +51,7 @@ void c_main(long *sp) {
     } else if (strcmp(c1, "version") == 0 || strcmp(c1, "v") == 0 || strcmp(c1, "-v") == 0) { action = ACTION_VERSION; }
 
     unsigned int target_uid = 0;
-    const char *p_args[64];
+    const char *p_args[argc]; 
     int p_count = 0;
 
     for (int i = data_start_idx; i < argc; i++) {
@@ -61,7 +61,7 @@ void c_main(long *sp) {
         } 
         else if (strcmp(argv[i], "--json") == 0 || strcmp(argv[i], "json") == 0) { is_json = 1; }
         else if (strcmp(argv[i], "--whiteout") == 0) { is_whiteout = 1; }
-        else if (p_count < 64) { p_args[p_count++] = argv[i]; }
+        else { p_args[p_count++] = argv[i]; }
     }
 
     switch (action) {
