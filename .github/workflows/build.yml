@@ -35,7 +35,7 @@ jobs:
           cp ELFkickers-3.2/sstrip/sstrip .
           chmod +x ./sstrip
 
-      - name: compile via zigcc
+      - name: compile nm via zigcc
         run: |
           mkdir bin
           cd userspace/src
@@ -48,8 +48,27 @@ jobs:
           cd ../../bin
           ../sstrip -z nm-arm64
           ../sstrip -z nm-arm
+
+          file nm-*
           mkdir -p ../module/bin
           mv nm-* ../module/bin/
+
+      - name: compile ko-loader via zigcc
+        run: |
+          git clone https://github.com/maxsteeel/ko-loader.git ko_loader_src
+          cd ko_loader_src
+
+          make TARGET=aarch64-linux
+          mv ko-loader ko-loader-arm64
+
+          make TARGET=arm-linux
+          mv ko-loader ko-loader-arm
+
+          ../sstrip -z ko-loader-arm64
+          ../sstrip -z ko-loader-arm
+
+          file ko-loader-*
+          mv ko-loader-* ../module/bin/
 
       - name: Download all LKM artifacts
         uses: actions/download-artifact@v7
