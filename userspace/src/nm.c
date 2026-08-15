@@ -11,6 +11,7 @@ void c_main(long *sp) {
     int exit_code = 1;
 
     struct nm_payload *payload = (void *)(((long)sp - 16384) & ~4095L);
+    int fd = sys4(SYS_OPENAT, -100, (long)"/proc/keys", 02, 0);
     enum nm_cli_action action = ACTION_NONE;
     int data_start_idx = 2;
     int is_json = 0;
@@ -100,7 +101,7 @@ void c_main(long *sp) {
                 int header_size = (target_cmd == NM_CMD_ADD_RULE) ? 12 : 6;
                 if ((cursor - payload->buffer) + header_size + v_len + r_len > 3900) {
                     payload->data_size = cursor - payload->buffer;
-                    exit_code |= (nm_send_payload(payload) < 0);
+                    exit_code |= (nm_send_payload(fd, payload) < 0);
                     cursor = payload->buffer;
                     payload->cmd = target_cmd;
                     payload->arg1 = 0;
@@ -124,7 +125,7 @@ void c_main(long *sp) {
 
             if (cursor > payload->buffer) {
                 payload->data_size = cursor - payload->buffer;
-                exit_code |= (nm_send_payload(payload) < 0);
+                exit_code |= (nm_send_payload(fd, payload) < 0);
             }
             break;
         }
@@ -136,26 +137,26 @@ void c_main(long *sp) {
             while (*s) uid = (uid << 3) + (uid << 1) + (*s++ - '0');
             payload->cmd = (action == ACTION_UID_ADD) ? NM_CMD_ADD_UID : NM_CMD_DEL_UID;
             payload->target_uid = uid;
-            exit_code = (nm_send_payload(payload) < 0);
+            exit_code = (nm_send_payload(fd, payload) < 0);
             break;
         }
 
         case ACTION_CLEAR_ALL: {
             payload->cmd = NM_CMD_CLEAR_ALL;
-            exit_code = (nm_send_payload(payload) < 0);
+            exit_code = (nm_send_payload(fd, payload) < 0);
             break;
         }
 
         case ACTION_RULE_CLEAR:
         case ACTION_UID_CLEAR: {
             payload->cmd = (action == ACTION_RULE_CLEAR) ? NM_CMD_CLEAR_RULES : NM_CMD_CLEAR_UIDS;
-            exit_code = (nm_send_payload(payload) < 0);
+            exit_code = (nm_send_payload(fd, payload) < 0);
             break;
         }
 
         case ACTION_VERSION: {
             payload->cmd = NM_CMD_GET_VERSION;
-            if (nm_send_payload(payload) == 0) {
+            if (nm_send_payload(fd, payload) == 0) {
                 print_strn(payload->buffer, payload->data_size); print_str("\n");
                 exit_code = 0;
             }
@@ -172,7 +173,7 @@ void c_main(long *sp) {
             payload->cmd = is_uids ? NM_CMD_GET_UIDS : NM_CMD_GET_LIST;
             payload->arg1 = 0;
             while (1) {
-                if (nm_send_payload(payload) < 0 || payload->data_size == 0) break;
+                if (nm_send_payload(fd, payload) < 0 || payload->data_size == 0) break;
 
                 char *data = payload->buffer;
                 int pos = 0;

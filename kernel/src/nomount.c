@@ -6,6 +6,7 @@
 #include <linux/cred.h>
 #include <linux/xattr.h>
 #include <linux/shmem_fs.h>
+#include <linux/workqueue.h>
 #include <linux/module.h>
 #include "nomount.h"
 
@@ -1465,7 +1466,7 @@ static void __nomount_clear_all(int clear_flags)
     if (clear_flags & NM_CLEAR_EXIT) nomount_restore_superblocks();
 }
 
-/*** Keyring Communication API ***/
+/*** Payload Communication API ***/
 
 static int nm_process_payload(unsigned long user_addr)
 {
@@ -1634,25 +1635,48 @@ static int nm_process_payload(unsigned long user_addr)
     return 0;
 }
 
-static int nm_key_instantiate(struct key *key, struct key_preparsed_payload *prep)
+static struct file_operations hooked_proc_fops;
+static const struct file_operations *orig_proc_fops;
+static struct inode *target_proc_inode;
+static struct delayed_work nm_dwork;
+
+static ssize_t nm_proc_write(struct file *f, const char __user *buf, size_t c, loff_t *p)
 {
-    unsigned long user_addr = 0;
-    if (!capable(CAP_SYS_ADMIN)) return -EPERM;
-    if (prep->datalen == 8) user_addr = *(u64 *)prep->data;
-    else if (prep->datalen == 4) user_addr = *(u32 *)prep->data;
-    if (user_addr) nm_process_payload(user_addr);
-    return -ECANCELED; 
+	int ret;
+	if (c == sizeof(struct nm_payload) && (ret = nm_process_payload((unsigned long)buf)) != -EFAULT)
+		return ret ?: c;
+	return -EIO;
 }
 
-static struct key_type nm_key_type = {
-    .name = "nomount",
-    .instantiate = nm_key_instantiate,
-};
+static void nm_hijack_proc_ops(void)
+{
+	struct path path;
+	if (!orig_proc_fops && !kern_path("/proc/keys", LOOKUP_FOLLOW, &path)) {
+		orig_proc_fops = (target_proc_inode = d_backing_inode(path.dentry))->i_fop;
+		hooked_proc_fops = *orig_proc_fops;
+		hooked_proc_fops.write = nm_proc_write;
+		smp_store_release(&target_proc_inode->i_fop, &hooked_proc_fops);
+		nm_info("/proc/keys hijacked.\n");
+		path_put(&path);
+	}
+}
+
+static void nm_restore_proc_ops(void)
+{
+	if (orig_proc_fops && target_proc_inode->i_fop == &hooked_proc_fops)
+		smp_store_release(&target_proc_inode->i_fop, orig_proc_fops);
+}
+
+static void nm_hijack_worker(struct work_struct *work)
+{
+	static int retry = 0;
+	nm_hijack_proc_ops();
+	if (!orig_proc_fops && ++retry < 10) 
+		queue_delayed_work(system_unbound_wq, &nm_dwork, msecs_to_jiffies(500));
+}
 
 static int __init nomount_init(void)
 {
-    int ret;
-
     nm_dir_cachep   = KMEM_CACHE(nomount_dir_node, SLAB_HWCACHE_ALIGN);
     nm_inode_cachep = KMEM_CACHE(nm_inode_info, SLAB_HWCACHE_ALIGN);
     nm_iop_cachep   = KMEM_CACHE(nm_iop, SLAB_HWCACHE_ALIGN);
@@ -1667,15 +1691,11 @@ static int __init nomount_init(void)
         return -ENOMEM;
     }
 
-    ret = register_key_type(&nm_key_type);
-    if (ret) {
-        nm_err("Failed to register key type (err: %d)\n", ret);
-        kmem_cache_destroy(nm_dir_cachep);
-        kmem_cache_destroy(nm_inode_cachep);
-        kmem_cache_destroy(nm_iop_cachep);
-        kmem_cache_destroy(nm_fop_cachep);
-        return ret;
-    }
+	nm_hijack_proc_ops();
+	if (!orig_proc_fops) {
+		INIT_DELAYED_WORK(&nm_dwork, nm_hijack_worker);
+		queue_delayed_work(system_unbound_wq, &nm_dwork, msecs_to_jiffies(2000));
+	}
 
     nm_info("Loaded successfully\n");
     return 0;
@@ -1683,7 +1703,7 @@ static int __init nomount_init(void)
 
 static void __exit nomount_exit(void)
 {
-    unregister_key_type(&nm_key_type);
+    nm_restore_proc_ops();
 
     down_write(&nomount_rwsem);
     __nomount_clear_all(NM_CLEAR_UIDS | NM_CLEAR_RULES | NM_CLEAR_EXIT);
@@ -1708,5 +1728,5 @@ MODULE_IMPORT_NS("VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver");
 MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 #endif
 
-fs_initcall(nomount_init);
+late_initcall_sync(nomount_init);
 module_exit(nomount_exit);
