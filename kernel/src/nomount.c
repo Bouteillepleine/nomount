@@ -1732,5 +1732,11 @@ MODULE_VERSION(NOMOUNT_VERSION);
 MODULE_AUTHOR("maxsteeel");
 MODULE_DESCRIPTION("NoMount Path Redirection VFS Subsystem");
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+MODULE_IMPORT_NS("VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver");
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
+#endif
+
 fs_initcall(nomount_init);
 module_exit(nomount_exit);
