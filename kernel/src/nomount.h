@@ -12,11 +12,6 @@
 #include <linux/key-type.h>
 #include <linux/highmem.h>
 #include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
-#include <linux/unaligned.h>
-#else
-#include <asm/unaligned.h>
-#endif
 #include <linux/jump_label.h>
 #include <linux/compat.h>
 
@@ -249,28 +244,36 @@ enum {
     NM_CMD_GET_VERSION,
     NM_CMD_ADD_RULE,
     NM_CMD_DEL_RULE,
-    NM_CMD_CLEAR_ALL,
     NM_CMD_ADD_UID,
     NM_CMD_DEL_UID,
-    NM_CMD_GET_LIST,
-    NM_CMD_GET_UIDS,
-    NM_CMD_ADD_RULE_BATCH,
+    NM_CMD_CLEAR_ALL,
     NM_CMD_CLEAR_RULES,
     NM_CMD_CLEAR_UIDS,
+    NM_CMD_GET_LIST,
+    NM_CMD_GET_UIDS,
 };
 
 struct nm_payload {
     u64 magic;
     u32 cmd;
-    u32 flags;
     u32 target_uid;
-    u16 v_len;
-    u16 r_len;
     int status;
     u32 arg1;
     u32 data_size;
-    char buffer[3900];
-};
+    char buffer[4068];
+} __attribute__((packed));
+
+struct nm_rule_hdr {
+	u32 flags;
+	u32 uid;
+	u16 v_len;
+	u16 r_len;
+} __attribute__((packed));
+
+struct nm_del_hdr {
+	u32 uid;
+	u16 v_len;
+} __attribute__((packed));
 
 /* * Compat macros * */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)

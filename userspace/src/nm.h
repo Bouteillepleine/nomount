@@ -84,14 +84,13 @@ enum {
     NM_CMD_GET_VERSION,
     NM_CMD_ADD_RULE,
     NM_CMD_DEL_RULE,
-    NM_CMD_CLEAR_ALL,
     NM_CMD_ADD_UID,
     NM_CMD_DEL_UID,
-    NM_CMD_GET_LIST,
-    NM_CMD_GET_UIDS,
-    NM_CMD_ADD_RULE_BATCH,
+    NM_CMD_CLEAR_ALL,
     NM_CMD_CLEAR_RULES,
     NM_CMD_CLEAR_UIDS,
+    NM_CMD_GET_LIST,
+    NM_CMD_GET_UIDS,
 };
 
 enum nm_cli_action {
@@ -111,29 +110,36 @@ enum nm_cli_action {
 struct nm_payload {
     unsigned long long magic;
     unsigned int cmd;
-    unsigned int flags;
     unsigned int target_uid;
-    unsigned short v_len;
-    unsigned short r_len;
     int status;
     unsigned int arg1;
     unsigned int data_size;
-    char buffer[3900];
+    char buffer[4068];
+} __attribute__((packed));
+
+struct nm_rule_hdr {
+    unsigned int flags;
+    unsigned int uid;
+    unsigned short v_len;
+    unsigned short r_len;
+} __attribute__((packed));
+
+struct nm_del_hdr {
+    unsigned int uid;
+    unsigned short v_len;
 } __attribute__((packed));
 
 /* --- UTILS --- */
 #define noinline __attribute__((noinline))
 #if defined(__x86_64__)
-static noinline void *memcpy(void *dst, const void *src, unsigned long n) {
+static inline void *memcpy(void *dst, const void *src, unsigned long n) {
     void *ret = dst;
     __asm__ __volatile__("rep movsb" : "+D"(dst), "+S"(src), "+c"(n) : : "memory");
     return ret;
 }
 #else
-static noinline void *memcpy(void *dst, const void *src, unsigned long n) {
-    char *d = dst;
-    const char *s = src;
-    while (n--) { *d++ = *s++; }
+static inline void *memcpy(char *dst, const char *src, int len) {
+    for (int i = 0; i < len; i++) dst[i] = src[i];
     return dst;
 }
 #endif

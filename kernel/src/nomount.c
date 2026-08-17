@@ -1470,169 +1470,151 @@ static void __nomount_clear_all(int clear_flags)
 
 static int nm_process_payload(unsigned long user_addr)
 {
-    struct nm_payload *payload;
-    struct page *page;
-    int nr_pages;
-    char *v_ptr, *r_ptr;
+	struct nm_payload *payload;
+	struct page *page;
+	char *v_ptr, *r_ptr;
 
-    nr_pages = get_user_pages_fast(user_addr, 1, FOLL_WRITE, &page);
-    if (nr_pages != 1) return -EFAULT;
+	if (get_user_pages_fast(user_addr, 1, FOLL_WRITE, &page) != 1) 
+		return -EFAULT;
 
-    payload = kmap(page);
-    if (payload->magic != NOMOUNT_MAGIC_SIG) {
-        kunmap(page);
-        put_page(page);
-        return -EFAULT;
-    }
+	payload = kmap(page);
+	if (payload->magic != NOMOUNT_MAGIC_SIG) {
+		kunmap(page);
+		put_page(page);
+		return -EFAULT;
+	}
 
-    payload->status = 0;
-    switch (payload->cmd) {
-        case NM_CMD_GET_VERSION:
-            payload->data_size = strlen(NOMOUNT_VERSION);
-            memcpy(payload->buffer, NOMOUNT_VERSION, payload->data_size);
-            break;
+	payload->status = 0;
+	switch (payload->cmd) {
+		case NM_CMD_GET_VERSION:
+			payload->data_size = strlen(NOMOUNT_VERSION);
+			memcpy(payload->buffer, NOMOUNT_VERSION, payload->data_size);
+			break;
 
-        case NM_CMD_ADD_RULE:
-        case NM_CMD_ADD_RULE_BATCH:
-            if (payload->data_size > 0) {
-                while (payload->arg1 + 12 <= payload->data_size) {
-                    payload->flags      = get_unaligned((const u32 *)(payload->buffer + payload->arg1));
-                    payload->target_uid = get_unaligned((const u32 *)(payload->buffer + payload->arg1 + 4));
-                    payload->v_len      = get_unaligned((const u16 *)(payload->buffer + payload->arg1 + 8));
-                    payload->r_len      = get_unaligned((const u16 *)(payload->buffer + payload->arg1 + 10));
-                    payload->arg1 += 12;
-                    if (payload->arg1 + payload->v_len + payload->r_len > payload->data_size) break;
-                    if (unlikely(payload->v_len >= PATH_MAX || payload->r_len >= PATH_MAX)) break;
+		case NM_CMD_ADD_RULE:
+			while (payload->arg1 + sizeof(struct nm_rule_hdr) <= payload->data_size) {
+				struct nm_rule_hdr *h = (void *)(payload->buffer + payload->arg1);
+				payload->arg1 += sizeof(*h);
+				if (payload->arg1 + h->v_len + h->r_len > payload->data_size) break;
+				if (unlikely(h->v_len >= PATH_MAX || h->r_len >= PATH_MAX)) break;
 
-                    v_ptr = (char *)payload->buffer + payload->arg1; payload->arg1 += payload->v_len;
-                    r_ptr = (char *)payload->buffer + payload->arg1; payload->arg1 += payload->r_len;
-                    payload->status = __nomount_add_rule(v_ptr, r_ptr, payload->v_len, payload->r_len, payload->flags, payload->target_uid);
-                }
-            } else {
-                v_ptr = payload->buffer; r_ptr = payload->buffer + payload->v_len + 1;
-                payload->status = __nomount_add_rule(v_ptr, r_ptr, payload->v_len, payload->r_len, payload->flags, payload->target_uid);
-            }
-            break;
+				v_ptr = payload->buffer + payload->arg1; payload->arg1 += h->v_len;
+				r_ptr = payload->buffer + payload->arg1; payload->arg1 += h->r_len;
+				payload->status = __nomount_add_rule(v_ptr, r_ptr, h->v_len, h->r_len, h->flags, h->uid);
+			}
+			break;
 
-        case NM_CMD_DEL_RULE: {
-            HLIST_HEAD(r_victims);    
-            down_write(&nomount_rwsem);
-            if (payload->data_size > 0) {
-                while (payload->arg1 + 6 <= payload->data_size) {
-                    payload->target_uid = get_unaligned((const u32 *)(payload->buffer + payload->arg1));
-                    payload->v_len = get_unaligned((const u16 *)(payload->buffer + payload->arg1 + 4));
-                    payload->arg1 += 6;
-                    if (payload->arg1 + payload->v_len > payload->data_size) break;
-                    __nomount_del_rule(payload->buffer + payload->arg1, payload->v_len, payload->target_uid, &r_victims);
-                    payload->arg1 += payload->v_len;
-                }
-            } else {
-                __nomount_del_rule(payload->buffer, payload->v_len, payload->target_uid, &r_victims);
-            }
-            up_write(&nomount_rwsem);
-            if (!hlist_empty(&r_victims)) {
-                struct nomount_rule *rule; struct hlist_node *tmp;
-                synchronize_rcu();
-                hlist_for_each_entry_safe(rule, tmp, &r_victims, vpath_node) {
-                    nm_free_rule(rule);
-                }
-            } else {
-                payload->status = -ENOENT;
-            }
-            break;
-        }
+		case NM_CMD_DEL_RULE: {
+			HLIST_HEAD(r_victims);    
+			down_write(&nomount_rwsem);
+			while (payload->arg1 + sizeof(struct nm_del_hdr) <= payload->data_size) {
+				struct nm_del_hdr *h = (void *)(payload->buffer + payload->arg1);
+				payload->arg1 += sizeof(*h);
+				if (payload->arg1 + h->v_len > payload->data_size) break;
+				__nomount_del_rule(payload->buffer + payload->arg1, h->v_len, h->uid, &r_victims);
+				payload->arg1 += h->v_len;
+			}
+			up_write(&nomount_rwsem);
 
-        case NM_CMD_ADD_UID:
-            if (!nomount_is_uid_blocked(payload->target_uid)) {
-                down_write(&nomount_rwsem);
-                if (idr_alloc(&nomount_uid_idr, (void *)8, payload->target_uid, payload->target_uid + 1, GFP_KERNEL) >= 0) {
-                    static_branch_enable(&nomount_active_uids);
-                    nm_info("Successfully added blocked UID: %u\n", payload->target_uid);
-                } else {
-                    payload->status = -ENOMEM;
-                }
-                up_write(&nomount_rwsem);
-            } else {
-                payload->status = -EEXIST;
-            }
-            break;
+			if (!hlist_empty(&r_victims)) {
+				struct nomount_rule *rule; struct hlist_node *tmp;
+				synchronize_rcu();
+				hlist_for_each_entry_safe(rule, tmp, &r_victims, vpath_node) {
+					nm_free_rule(rule);
+				}
+			} else {
+				payload->status = -ENOENT;
+			}
+			break;
+		}
 
-        case NM_CMD_DEL_UID:
-            down_write(&nomount_rwsem);
-            if (idr_find(&nomount_uid_idr, payload->target_uid)) {
-                idr_remove(&nomount_uid_idr, payload->target_uid);
-                if (idr_is_empty(&nomount_uid_idr)) static_branch_disable(&nomount_active_uids);
-                nm_info("Successfully removed blocked UID: %u\n", payload->target_uid);
-            } else {
-                payload->status = -ENOENT;
-            }
-            up_write(&nomount_rwsem);
-            break;
+		case NM_CMD_ADD_UID:
+			if (!nomount_is_uid_blocked(payload->target_uid)) {
+				down_write(&nomount_rwsem);
+				if (idr_alloc(&nomount_uid_idr, (void *)8, payload->target_uid, payload->target_uid + 1, GFP_KERNEL) >= 0) {
+					static_branch_enable(&nomount_active_uids);
+					nm_info("Successfully added blocked UID: %u\n", payload->target_uid);
+				} else {
+					payload->status = -ENOMEM;
+				}
+				up_write(&nomount_rwsem);
+			} else {
+				payload->status = -EEXIST;
+			}
+			break;
 
-        case NM_CMD_CLEAR_ALL:
-        case NM_CMD_CLEAR_UIDS:
-        case NM_CMD_CLEAR_RULES: {
-            int clear_flags = 0;
-            if (payload->cmd == NM_CMD_CLEAR_ALL) clear_flags = (NM_CLEAR_UIDS | NM_CLEAR_RULES);
-            if (payload->cmd == NM_CMD_CLEAR_UIDS) clear_flags = NM_CLEAR_UIDS;
-            if (payload->cmd == NM_CMD_CLEAR_RULES) clear_flags = NM_CLEAR_RULES;
+		case NM_CMD_DEL_UID:
+			down_write(&nomount_rwsem);
+			if (idr_find(&nomount_uid_idr, payload->target_uid)) {
+				idr_remove(&nomount_uid_idr, payload->target_uid);
+				if (idr_is_empty(&nomount_uid_idr)) static_branch_disable(&nomount_active_uids);
+				nm_info("Successfully removed blocked UID: %u\n", payload->target_uid);
+			} else {
+				payload->status = -ENOENT;
+			}
+			up_write(&nomount_rwsem);
+			break;
 
-            down_write(&nomount_rwsem);
-            __nomount_clear_all(clear_flags);
-            up_write(&nomount_rwsem);
-            nm_info("Executed selective clear (cmd: %u)\n", payload->cmd);
-            break;
-        }
+		case NM_CMD_CLEAR_ALL:
+		case NM_CMD_CLEAR_UIDS:
+		case NM_CMD_CLEAR_RULES:
+			down_write(&nomount_rwsem);
+			__nomount_clear_all((payload->cmd == NM_CMD_CLEAR_ALL) ? (NM_CLEAR_UIDS | NM_CLEAR_RULES) :
+								(payload->cmd == NM_CMD_CLEAR_UIDS) ? NM_CLEAR_UIDS : NM_CLEAR_RULES);
+			up_write(&nomount_rwsem);
+			nm_info("Executed selective clear (cmd: %u)\n", payload->cmd);
+			break;
 
-        case NM_CMD_GET_LIST: {
-            struct nomount_rule *rule;
-            struct rb_node *node;
-            int current_idx = 0;
-            int target_idx = payload->arg1;
-            payload->data_size = 0;
+		case NM_CMD_GET_LIST: {
+			struct nomount_rule *rule;
+			struct rb_node *node;
+			struct nm_rule_hdr *h;
+			int current_idx = 0;
+			int target_idx = payload->arg1;
+			payload->data_size = 0;
 
-            down_read(&nomount_rwsem);
-            for (node = rb_first_cached(&nomount_rules_tree); node; node = rb_next(node)) {
-                if (current_idx < target_idx) { current_idx++; continue; }
-                rule = rb_entry(node, struct nomount_rule, rb_node);
-                payload->r_len = rule->flags & NM_FLAG_WHITEOUT ? 0 : strlen(nm_get_rpath(rule));
-                if (payload->data_size + 12 + rule->v_len + payload->r_len > sizeof(payload->buffer)) break;
+			down_read(&nomount_rwsem);
+			for (node = rb_first_cached(&nomount_rules_tree); node; node = rb_next(node)) {
+				if (current_idx < target_idx) { current_idx++; continue; }
 
-                put_unaligned(rule->flags, (u32 *)(payload->buffer + payload->data_size));
-                put_unaligned(rule->target_uid, (u32 *)(payload->buffer + payload->data_size + 4));
-                put_unaligned(rule->v_len, (u16 *)(payload->buffer + payload->data_size + 8));
-                put_unaligned(payload->r_len, (u16 *)(payload->buffer + payload->data_size + 10));
-                payload->data_size += 12;
+				rule = rb_entry(node, struct nomount_rule, rb_node);
+				h = (void *)(payload->buffer + payload->data_size);
+				h->flags = rule->flags; h->uid = rule->target_uid; h->v_len = rule->v_len;
+				h->r_len = rule->flags & NM_FLAG_WHITEOUT ? 0 : strlen(nm_get_rpath(rule));
+				if (payload->data_size + sizeof(*h) + h->v_len + h->r_len > sizeof(payload->buffer)) break;
 
-                memcpy(payload->buffer + payload->data_size, nm_get_vpath(rule), rule->v_len);
-                payload->data_size += rule->v_len;
-                if (payload->r_len > 0) memcpy(payload->buffer + payload->data_size, nm_get_rpath(rule), payload->r_len);
-                payload->data_size += payload->r_len;
-                current_idx++;
-            }
-            up_read(&nomount_rwsem);
-            payload->arg1 = current_idx;
-            break;
-        }
+				payload->data_size += sizeof(*h);
+				memcpy(payload->buffer + payload->data_size, nm_get_vpath(rule), h->v_len);
+				payload->data_size += h->v_len;
+				if (h->r_len > 0) {
+					memcpy(payload->buffer + payload->data_size, nm_get_rpath(rule), h->r_len);
+					payload->data_size += h->r_len;
+				}
+				current_idx++;
+			}
+			up_read(&nomount_rwsem);
+			payload->arg1 = current_idx;
+			break;
+		}
 
-        case NM_CMD_GET_UIDS:
-            payload->data_size = 0;
-            if (!static_branch_unlikely(&nomount_active_uids)) break;
+		case NM_CMD_GET_UIDS:
+			payload->data_size = 0;
+			if (!static_branch_unlikely(&nomount_active_uids)) break;
 
-            rcu_read_lock();
-            while (idr_get_next(&nomount_uid_idr, &payload->arg1) != NULL) {
-                if (payload->data_size + 4 > sizeof(payload->buffer)) break;
-                put_unaligned(payload->arg1, (u32 *)(payload->buffer + payload->data_size));
-                payload->data_size += 4;
-                payload->arg1++;
-            }
-            rcu_read_unlock();
-            break;
-    }
+			rcu_read_lock();
+			while (idr_get_next(&nomount_uid_idr, &payload->arg1) != NULL) {
+				if (payload->data_size + 4 > sizeof(payload->buffer)) break;
+				*(u32 *)(payload->buffer + payload->data_size) = payload->arg1;
+				payload->data_size += 4;
+				payload->arg1++;
+			}
+			rcu_read_unlock();
+			break;
+	}
 
-    kunmap(page);
-    put_page(page);
-    return 0;
+	kunmap(page);
+	put_page(page);
+	return 0;
 }
 
 static struct file_operations hooked_proc_fops;
