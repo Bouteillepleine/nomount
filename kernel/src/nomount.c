@@ -511,47 +511,17 @@ static ssize_t nm_write_iter(struct kiocb *iocb, struct iov_iter *from)
 
 static int nm_mmap(struct file *file, struct vm_area_struct *vma)
 {
-    struct file *shmem_file, *real_file = file->private_data;
-    loff_t pos_in = 0, pos_out = 0, size, remaining, copied;
+    struct file *real_file = file->private_data;
     int ret;
     if (!real_file || !real_file->f_op->mmap) return -ENODEV;
 
-    size = i_size_read(file_inode(real_file));
-    if (size <= 0) return -EINVAL;
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
-    shmem_file = shmem_file_setup("nm_shmem", size, (typeof(vma->flags)){0});
-#else
-    shmem_file = shmem_file_setup("nm_shmem", size, (typeof(vma->vm_flags)){0});
-#endif
-    if (IS_ERR(shmem_file)) return PTR_ERR(shmem_file);
-    file_inode(shmem_file)->i_flags |= S_PRIVATE;
-
-    remaining = size;
-    while (remaining > 0) {
-        copied = vfs_copy_file_range(real_file, pos_in, shmem_file, pos_out, remaining, 0);
-#ifdef COPY_FILE_SPLICE
-        if (copied == -EXDEV) copied = vfs_copy_file_range(real_file, pos_in, shmem_file, pos_out, remaining, COPY_FILE_SPLICE);
-#endif
-        if (copied <= 0) { fput(shmem_file); return copied < 0 ? (int)copied : -EIO; }
-        pos_in += copied;
-        pos_out += copied;
-        remaining -= copied;
-    }
-
-    ret = shmem_file->f_op->mmap(shmem_file, vma);
-    if (ret == 0) {
-        if (vma->vm_file) fput(vma->vm_file);
-        vma->vm_file = shmem_file;
-        file_inode(file)->i_flags &= ~S_PRIVATE;
-    } else {
-        fput(shmem_file);
-    }
-
+    vma->vm_file = real_file;
+    ret = real_file->f_op->mmap(real_file, vma);
+    if (ret == 0 && vma->vm_file == real_file) vma->vm_file = file;
+    if (ret == 0) file_inode(file)->i_flags &= ~S_PRIVATE;
     return ret;
 }
 
-// TODO: implement shmem mmap'ing here like in nm_mmap
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
 static int nm_mmap_prepare(struct vm_area_desc *desc)
 {
