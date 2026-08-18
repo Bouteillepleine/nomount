@@ -7,6 +7,7 @@
 #include <linux/hashtable.h>
 #include <linux/rbtree.h>
 #include <linux/rwsem.h>
+#include <linux/srcu.h>
 #include <linux/atomic.h>
 #include <linux/file.h>
 #include <linux/key-type.h>
@@ -36,6 +37,7 @@ static struct rb_root_cached nomount_rules_tree = RB_ROOT_CACHED;
 static LIST_HEAD(nomount_sb_list);
 static DEFINE_IDR(nomount_uid_idr);
 static DECLARE_RWSEM(nomount_rwsem);
+DEFINE_STATIC_SRCU(nomount_srcu);
 
 /* * Helpers to dynamically calculate the memory address of the strings */
 #define nm_get_vpath(rule) ((rule)->paths)
