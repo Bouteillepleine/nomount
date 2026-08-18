@@ -76,10 +76,6 @@ struct nm_inode_info {
     u8 flags;
 };
 
-#define nm_get_real_inode(v_inode) \
-    (((v_inode)->i_private && ((struct nm_inode_info *)(v_inode)->i_private)->r_path.dentry) ? \
-        d_backing_inode(((struct nm_inode_info *)(v_inode)->i_private)->r_path.dentry) : NULL)
-
 struct nomount_child_node {
     struct rcu_head rcu;
     u32 name_hash;
@@ -89,10 +85,6 @@ struct nomount_child_node {
     u8 flags;
     u16 name_len;
     struct nomount_rule *rule;
-
-    /* * FLEXIBLE ARRAY MEMBER:
-     * Memory Layout: [ struct ] "children_name\0"
-     */
     char name[]; 
 };
 
@@ -107,7 +99,6 @@ struct nomount_child_array {
 struct nomount_dir_node {
     struct rcu_head rcu;
     struct nomount_child_array __rcu *children;
-    seqcount_t seq;
     u64 bloom_mask;
     struct inode *v_inode;
     union {
@@ -115,25 +106,23 @@ struct nomount_dir_node {
         struct nomount_rule *owner_rule;
         unsigned long _tag_ptr;
     };
+    seqcount_t seq;
 };
 
 struct nomount_rule {
     struct rb_node rb_node;
+    u32 v_hash;
+    unsigned int target_uid;
+    u16 v_len;
+    u8  flags;
+
     struct hlist_node vpath_node;
     struct nomount_dir_node *parent_dir;
     struct nomount_dir_node *this_dir;
     struct path r_path;
     unsigned long v_ino;
-    u32 v_hash;
-    u16 v_len;
-    u8  flags;
-    unsigned int target_uid;
-
-    /* * FLEXIBLE ARRAY MEMBER: 
-     * Memory Layout: [ struct ] "virtual_path\0real_path\0"
-     */
     char paths[]; 
-} ____cacheline_aligned;
+};
 
 struct nm_rule_info {
     u32 flags;
@@ -186,16 +175,17 @@ static inline int nm_unpack_pos(loff_t pos) {
 }
 
 /** RBTree Protocol ****/
-#define nm_cmp(a, b, next_cmp) ((a) < (b) ? -1 : ((a) > (b) ? 1 : (next_cmp)))
 static __always_inline struct nomount_rule *nm_tree_search_path(u32 hash, u16 len, const char *path)
 {
     struct rb_node *node = nomount_rules_tree.rb_root.rb_node;
     while (node) {
-        struct nomount_rule *rule = rb_entry(node, struct nomount_rule, rb_node);
-        int cmp = nm_cmp(hash, rule->v_hash, nm_cmp(len, rule->v_len, memcmp(path, nm_get_vpath(rule), len)));
-        if (cmp < 0) node = node->rb_left;
-        else if (cmp > 0) node = node->rb_right;
-        else return rule;
+        struct nomount_rule *r = rb_entry(node, struct nomount_rule, rb_node);
+        int cmp = (hash != r->v_hash) ? (hash < r->v_hash ? -1 : 1) :
+                  (len != r->v_len)   ? (len < r->v_len ? -1 : 1) :
+                  memcmp(path, nm_get_vpath(r), len);
+
+        if (!cmp) return r;
+        node = cmp < 0 ? node->rb_left : node->rb_right;
     }
     return NULL;
 }
@@ -204,11 +194,14 @@ static __always_inline struct nomount_rule *nm_tree_search_exact(u32 hash, u16 l
 {
     struct rb_node *node = nomount_rules_tree.rb_root.rb_node;
     while (node) {
-        struct nomount_rule *rule = rb_entry(node, struct nomount_rule, rb_node);
-        int cmp = nm_cmp(hash, rule->v_hash, nm_cmp(len, rule->v_len, nm_cmp(memcmp(path, nm_get_vpath(rule), len), 0, nm_cmp(uid, rule->target_uid, 0))));
-        if (cmp < 0) node = node->rb_left;
-        else if (cmp > 0) node = node->rb_right;
-        else return rule;
+        struct nomount_rule *r = rb_entry(node, struct nomount_rule, rb_node);
+        int cmp = (hash != r->v_hash) ? (hash < r->v_hash ? -1 : 1) :
+                  (len != r->v_len)   ? (len < r->v_len ? -1 : 1) :
+                  (cmp = memcmp(path, nm_get_vpath(r), len)) ? cmp :
+                  (uid != r->target_uid) ? (uid < r->target_uid ? -1 : 1) : 0;
+
+        if (!cmp) return r;
+        node = cmp < 0 ? node->rb_left : node->rb_right;
     }
     return NULL;
 }
@@ -216,22 +209,16 @@ static __always_inline struct nomount_rule *nm_tree_search_exact(u32 hash, u16 l
 static __always_inline void nm_tree_insert(struct nomount_rule *new_rule)
 {
     struct rb_node **link = &nomount_rules_tree.rb_root.rb_node, *parent = NULL;
-    const char *n_path = nm_get_vpath(new_rule);
-    unsigned int n_uid = new_rule->target_uid;
-    u32 n_hash = new_rule->v_hash;
-    u16 n_len = new_rule->v_len;
     bool leftmost = true;
-    int cmp;
     while (*link) {
-        struct nomount_rule *rule = rb_entry(*link, struct nomount_rule, rb_node);
         parent = *link;
-        cmp = nm_cmp(n_hash, rule->v_hash, nm_cmp(n_len, rule->v_len, nm_cmp(memcmp(n_path, nm_get_vpath(rule), n_len), 0, nm_cmp(n_uid, rule->target_uid, 0))));
-        if (cmp < 0) {
-            link = &parent->rb_left;
-        } else {
-            link = &parent->rb_right;
-            leftmost = false;
-        }
+        struct nomount_rule *r = rb_entry(parent, struct nomount_rule, rb_node);
+        int cmp = (new_rule->v_hash != r->v_hash) ? (new_rule->v_hash < r->v_hash ? -1 : 1) :
+                  (new_rule->v_len != r->v_len)   ? (new_rule->v_len < r->v_len ? -1 : 1) :
+                  (cmp = memcmp(nm_get_vpath(new_rule), nm_get_vpath(r), new_rule->v_len)) ? cmp :
+                  (new_rule->target_uid != r->target_uid) ? (new_rule->target_uid < r->target_uid ? -1 : 1) : 0;
+
+        link = cmp < 0 ? &parent->rb_left : (leftmost = false, &parent->rb_right);
     }
     rb_link_node(&new_rule->rb_node, parent, link);
     rb_insert_color_cached(&new_rule->rb_node, &nomount_rules_tree, leftmost);
