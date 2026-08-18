@@ -126,12 +126,6 @@ static void nm_dir_rcu_free(struct rcu_head *head)
     kmem_cache_free(nm_dir_cachep, dir);
 }
 
-static void nm_child_array_rcu_free(struct rcu_head *head)
-{
-    struct nomount_child_array *arr = container_of(head, struct nomount_child_array, rcu);
-    kfree(arr);
-}
-
 struct nomount_proxy_ctx {
     struct dir_context ctx;
     struct dir_context *orig_ctx;
@@ -1114,7 +1108,7 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
     dir_node->bloom_mask |= (1ULL << (target_hash & 63));
     write_seqcount_end(&dir_node->seq);
     synchronize_srcu(&nomount_srcu);
-    if (old_arr) call_rcu(&old_arr->rcu, nm_child_array_rcu_free);
+    if (old_arr) kfree_rcu(old_arr, rcu);
 }
 
 static void __nomount_delete_child_locked(struct nomount_rule *rule)
@@ -1145,7 +1139,7 @@ static void __nomount_delete_child_locked(struct nomount_rule *rule)
         dir_node->bloom_mask = 0;
         write_seqcount_end(&dir_node->seq);
         synchronize_srcu(&nomount_srcu);
-        call_rcu(&old_arr->rcu, nm_child_array_rcu_free);
+        kfree_rcu(old_arr, rcu);
         kfree_rcu(child_to_free, rcu);
         return;
     }
