@@ -1129,10 +1129,10 @@ static int nomount_generate_virtual_topology(struct nomount_rule *target_rule)
 
         char orig_vpath = v_path[i];
         if (i > 0) v_path[i] = '\0';
-        err = kern_path((parent_len == 1) ? "/" : v_path, LOOKUP_FOLLOW, &p_path);
+        int rc = kern_path((parent_len == 1) ? "/" : v_path, LOOKUP_FOLLOW, &p_path);
         if (i > 0) v_path[i] = orig_vpath;
 
-        if (err == 0) {
+        if (rc == 0) {
             struct inode *v_inode = d_backing_inode(p_path.dentry);
             dir_node = nomount_get_dir_node(v_inode);
             if (!dir_node) dir_node = __nomount_alloc_dir_node(v_inode);
