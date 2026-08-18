@@ -1470,12 +1470,16 @@ static int nm_process_payload(unsigned long user_addr)
 {
 	struct nm_payload *payload;
 	struct page *page;
+	unsigned long pg_off = offset_in_page(user_addr);
 	char *v_ptr, *r_ptr;
+
+	if (pg_off + sizeof(*payload) > PAGE_SIZE)
+		return -EFAULT;
 
 	if (get_user_pages_fast(user_addr, 1, FOLL_WRITE, &page) != 1) 
 		return -EFAULT;
 
-	payload = kmap(page);
+	payload = kmap(page) + pg_off;
 	if (payload->magic != NOMOUNT_MAGIC_SIG) {
 		kunmap(page);
 		put_page(page);
@@ -1490,6 +1494,7 @@ static int nm_process_payload(unsigned long user_addr)
 			break;
 
 		case NM_CMD_ADD_RULE:
+			if (payload->data_size > sizeof(payload->buffer)) { payload->status = -EINVAL; break; }
 			while (payload->arg1 + sizeof(struct nm_rule_hdr) <= payload->data_size) {
 				struct nm_rule_hdr *h = (void *)(payload->buffer + payload->arg1);
 				payload->arg1 += sizeof(*h);
@@ -1504,6 +1509,7 @@ static int nm_process_payload(unsigned long user_addr)
 
 		case NM_CMD_DEL_RULE: {
 			HLIST_HEAD(r_victims);    
+			if (payload->data_size > sizeof(payload->buffer)) { payload->status = -EINVAL; break; }
 			down_write(&nomount_rwsem);
 			while (payload->arg1 + sizeof(struct nm_del_hdr) <= payload->data_size) {
 				struct nm_del_hdr *h = (void *)(payload->buffer + payload->arg1);
@@ -1573,20 +1579,24 @@ static int nm_process_payload(unsigned long user_addr)
 
 			down_read(&nomount_rwsem);
 			for (node = rb_first_cached(&nomount_rules_tree); node; node = rb_next(node)) {
+				u16 v_len, r_len;
+
 				if (current_idx < target_idx) { current_idx++; continue; }
 
 				rule = rb_entry(node, struct nomount_rule, rb_node);
-				h = (void *)(payload->buffer + payload->data_size);
-				h->flags = rule->flags; h->uid = rule->target_uid; h->v_len = rule->v_len;
-				h->r_len = rule->flags & NM_FLAG_WHITEOUT ? 0 : strlen(nm_get_rpath(rule));
-				if (payload->data_size + sizeof(*h) + h->v_len + h->r_len > sizeof(payload->buffer)) break;
+				v_len = rule->v_len;
+				r_len = rule->flags & NM_FLAG_WHITEOUT ? 0 : strlen(nm_get_rpath(rule));
+				if (payload->data_size + sizeof(*h) + v_len + r_len > sizeof(payload->buffer)) break;
 
+				h = (void *)(payload->buffer + payload->data_size);
+				h->flags = rule->flags; h->uid = rule->target_uid;
+				h->v_len = v_len; h->r_len = r_len;
 				payload->data_size += sizeof(*h);
-				memcpy(payload->buffer + payload->data_size, nm_get_vpath(rule), h->v_len);
-				payload->data_size += h->v_len;
-				if (h->r_len > 0) {
-					memcpy(payload->buffer + payload->data_size, nm_get_rpath(rule), h->r_len);
-					payload->data_size += h->r_len;
+				memcpy(payload->buffer + payload->data_size, nm_get_vpath(rule), v_len);
+				payload->data_size += v_len;
+				if (r_len > 0) {
+					memcpy(payload->buffer + payload->data_size, nm_get_rpath(rule), r_len);
+					payload->data_size += r_len;
 				}
 				current_idx++;
 			}
