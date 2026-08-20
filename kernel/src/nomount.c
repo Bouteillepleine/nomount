@@ -463,30 +463,15 @@ static ssize_t nm_write_iter(struct kiocb *iocb, struct iov_iter *from)
 
 static int nm_mmap(struct file *file, struct vm_area_struct *vma)
 {
-    struct file *real_file = file->private_data;
-    int ret;
-    if (!real_file || !real_file->f_op->mmap) return -ENODEV;
-
-    vma->vm_file = real_file;
-    ret = real_file->f_op->mmap(real_file, vma);
-    if (ret == 0 && vma->vm_file == real_file) vma->vm_file = file;
-    if (ret == 0) file_inode(file)->i_flags &= ~S_PRIVATE;
-    return ret;
+    int ret = generic_file_mmap(file, vma);
+    return ret ? ret : (file_inode(file)->i_flags &= ~S_PRIVATE, 0);
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
 static int nm_mmap_prepare(struct vm_area_desc *desc)
 {
-    struct file *file = desc->file;
-    struct file *real_file = file->private_data;
-    int ret;
-    if (!real_file || !real_file->f_op->mmap_prepare) return -ENODEV;
-
-    *(struct file **)&desc->file = real_file;
-    ret = real_file->f_op->mmap_prepare(desc);
-    if (ret == 0 && desc->file == real_file) *(struct file **)&desc->file = file;
-    if (ret == 0) file_inode(file)->i_flags &= ~S_PRIVATE;
-    return ret;
+    int ret = generic_file_mmap_prepare(desc);
+    return ret ? ret : (file_inode(desc->file)->i_flags &= ~S_PRIVATE, 0);
 }
 #endif
 
