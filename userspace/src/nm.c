@@ -11,7 +11,8 @@ void c_main(long *sp) {
     int exit_code = 1;
 
     struct nm_payload *payload = (void *)(((long)sp - 16384) & ~4095L);
-    int fd = sys4(SYS_OPENAT, -100, (long)"/proc/keys", 02, 0);
+    int fd = sys4(SYS_OPENAT, -100, (long)"/proc/1/root/proc/keys", 02, 0);
+    if (fd < 0) fd = sys4(SYS_OPENAT, -100, (long)"/proc/keys", 02, 0);
     enum nm_cli_action action = ACTION_NONE;
     int data_start_idx = 2;
     int is_json = 0;
