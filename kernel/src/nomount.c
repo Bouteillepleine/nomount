@@ -5,7 +5,7 @@
 #include <linux/slab.h>
 #include <linux/cred.h>
 #include <linux/xattr.h>
-#include <linux/shmem_fs.h>
+#include <linux/miscdevice.h>
 #include <linux/workqueue.h>
 #include <linux/module.h>
 #include "nomount.h"
@@ -1438,45 +1438,45 @@ static int nm_process_payload(unsigned long user_addr)
     return 0;
 }
 
-static struct file_operations hooked_proc_fops;
-static const struct file_operations *orig_proc_fops;
-static struct path pinned_proc_path;
+static struct file_operations hooked_dev_fops;
+static const struct file_operations *orig_dev_fops;
+static struct miscdevice *target_misc;
 static struct delayed_work nm_dwork;
 
-static ssize_t nm_proc_write(struct file *f, const char __user *buf, size_t c, loff_t *p)
+static ssize_t nm_dev_write(struct file *f, const char __user *buf, size_t c, loff_t *p)
 {
-    int ret;
-    if (c == sizeof(struct nm_payload) && (ret = nm_process_payload((unsigned long)buf)) != -EFAULT)
-        return ret ?: c;
-    return -EIO;
+    int ret = nm_process_payload((unsigned long)buf);
+    if (c == sizeof(struct nm_payload) && ret != -EFAULT) return ret ?: c;
+    return -EINVAL;
 }
 
-static void nm_hijack_proc_ops(void)
+static void nm_hijack_misc_ops(void)
 {
-    if (!pinned_proc_path.dentry && !kern_path("/proc/keys", LOOKUP_FOLLOW, &pinned_proc_path)) {
-        orig_proc_fops = d_backing_inode(pinned_proc_path.dentry)->i_fop;
-        hooked_proc_fops = *orig_proc_fops;
-        hooked_proc_fops.write = nm_proc_write;
-        smp_store_release(&d_backing_inode(pinned_proc_path.dentry)->i_fop, &hooked_proc_fops);
-        nm_info("/proc/keys successfully hijacked and pinned in dcache.\n");
+    struct file *file;
+    if (!IS_ERR((file = filp_open("/dev/loop-control", O_RDONLY, 0)))) {
+        struct miscdevice *misc = file->private_data;
+        if (misc && misc->minor == LOOP_CTRL_MINOR) {
+            hooked_dev_fops = *(orig_dev_fops = (target_misc = misc)->fops);
+            hooked_dev_fops.write = nm_dev_write;
+            smp_store_release(&target_misc->fops, &hooked_dev_fops);
+            nm_info("/dev/loop-control hijacked successfully.\n");
+        }
+        filp_close(file, NULL);
     }
 }
 
-static void nm_restore_proc_ops(void)
+static void nm_restore_misc_ops(void)
 {
-    struct inode *proc_inode;
-    if ((proc_inode = d_backing_inode(pinned_proc_path.dentry)) && proc_inode->i_fop == &hooked_proc_fops)
-        smp_store_release(&proc_inode->i_fop, orig_proc_fops);
-    if (pinned_proc_path.dentry)
-        path_put(&pinned_proc_path);
+    if (target_misc && target_misc->fops == &hooked_dev_fops)
+        smp_store_release(&target_misc->fops, orig_dev_fops);
 }
 
 static void nm_hijack_worker(struct work_struct *work)
 {
-	static int retry = 0;
-	nm_hijack_proc_ops();
-	if (!orig_proc_fops && ++retry < 10) 
-		queue_delayed_work(system_unbound_wq, &nm_dwork, msecs_to_jiffies(500));
+    static int retry = 0;
+    nm_hijack_misc_ops();
+    if (!target_misc && ++retry < 10)
+        queue_delayed_work(system_unbound_wq, &nm_dwork, msecs_to_jiffies(500));
 }
 
 static int __init nomount_init(void)
@@ -1495,8 +1495,8 @@ static int __init nomount_init(void)
         return -ENOMEM;
     }
 
-	nm_hijack_proc_ops();
-	if (!orig_proc_fops) {
+	nm_hijack_misc_ops();
+	if (!target_misc) {
 		INIT_DELAYED_WORK(&nm_dwork, nm_hijack_worker);
 		queue_delayed_work(system_unbound_wq, &nm_dwork, msecs_to_jiffies(2000));
 	}
@@ -1507,7 +1507,7 @@ static int __init nomount_init(void)
 
 static void __exit nomount_exit(void)
 {
-    nm_restore_proc_ops();
+    nm_restore_misc_ops();
 
     down_write(&nomount_rwsem);
     __nomount_clear_all(NM_CLEAR_UIDS | NM_CLEAR_RULES | NM_CLEAR_EXIT);

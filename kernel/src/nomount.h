@@ -295,6 +295,10 @@ struct nm_del_hdr {
     #define FLAGS_VAL /* Nothing */
 #endif
 
+#ifndef LOOP_CTRL_MINOR
+#define LOOP_CTRL_MINOR 237
+#endif
+
 static inline void nm_sync_inode_times(struct inode *v_inode, struct inode *r_inode)
 {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
