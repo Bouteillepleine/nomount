@@ -1475,8 +1475,12 @@ static void nm_hijack_worker(struct work_struct *work)
 {
     static int retry = 0;
     nm_hijack_misc_ops();
-    if (!target_misc && ++retry < 10)
+    if (!target_misc && ++retry < 120) {
+        if (retry % 10 == 0) nm_info("still waiting for /dev targets to be created... (retry %d)\n", retry);
         queue_delayed_work(system_unbound_wq, &nm_dwork, msecs_to_jiffies(500));
+    } else if (!target_misc) {
+        nm_err("Could not find any /dev targets after 60 seconds!\n");
+    }
 }
 
 static int __init nomount_init(void)
