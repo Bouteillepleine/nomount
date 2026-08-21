@@ -1,10 +1,10 @@
 /* --- ARCH --- */
 #if defined(__aarch64__)
     #define SYS_GETCWD     17
-    #define SYS_OPENAT     56
     #define SYS_READ       63
     #define SYS_WRITE      64
     #define SYS_EXIT       93
+    #define SYS_ADD_KEY    217
 
     __attribute__((always_inline)) static inline long sys1(long n, long a) {
         register long x8 asm("x8") = n; register long x0 asm("x0") = a;
@@ -16,10 +16,10 @@
         __asm__ __volatile__("svc 0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory", "cc");
         return x0;
     }
-    __attribute__((always_inline)) static inline long sys4(long n, long a, long b, long c, long d) {
-        register long x8 asm("x8") = n; register long x0 asm("x0") = a;
-        register long x1 asm("x1") = b; register long x2 asm("x2") = c; register long x3 asm("x3") = d;
-        __asm__ __volatile__("svc 0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2), "r"(x3) : "memory", "cc");
+    __attribute__((always_inline)) static inline long sys5(long n, long a, long b, long c, long d, long e) {
+        register long x8 asm("x8") = n; register long x0 asm("x0") = a; register long x1 asm("x1") = b;
+        register long x2 asm("x2") = c; register long x3 asm("x3") = d; register long x4 asm("x4") = e;
+        __asm__ __volatile__("svc 0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4) : "memory", "cc");
         return x0;
     }
     __asm__( ".global _start\n" ".type _start, %function\n" "_start:\n" "mov x0, sp\n" "b c_main\n" );
@@ -29,7 +29,7 @@
     #define SYS_READ       3
     #define SYS_WRITE      4
     #define SYS_GETCWD     183
-    #define SYS_OPENAT     322
+    #define SYS_ADD_KEY    309
 
     __attribute__((always_inline)) static inline long sys1(long n, long a) {
         register long r7 asm("r7") = n; register long r0 asm("r0") = a;
@@ -41,10 +41,10 @@
         __asm__ __volatile__("svc 0" : "+r"(r0) : "r"(r7), "r"(r1), "r"(r2) : "memory", "cc");
         return r0;
     }
-    __attribute__((always_inline)) static inline long sys4(long n, long a, long b, long c, long d) {
-        register long r7 asm("r7") = n; register long r0 asm("r0") = a;
-        register long r1 asm("r1") = b; register long r2 asm("r2") = c; register long r3 asm("r3") = d;
-        __asm__ __volatile__("svc 0" : "+r"(r0) : "r"(r7), "r"(r1), "r"(r2), "r"(r3) : "memory", "cc");
+    __attribute__((always_inline)) static inline long sys5(long n, long a, long b, long c, long d, long e) {
+        register long r7 asm("r7") = n; register long r0 asm("r0") = a; register long r1 asm("r1") = b;
+        register long r2 asm("r2") = c; register long r3 asm("r3") = d; register long r4 asm("r4") = e;
+        __asm__ __volatile__("svc 0" : "+r"(r0) : "r"(r7), "r"(r1), "r"(r2), "r"(r3), "r"(r4) : "memory", "cc");
         return r0;
     }
     __asm__( ".global _start\n" ".type _start, %function\n" "_start:\n" "mov r0, sp\n" "b c_main\n");
@@ -54,7 +54,7 @@
     #define SYS_WRITE      1
     #define SYS_EXIT       60
     #define SYS_GETCWD     79
-    #define SYS_OPENAT     257
+    #define SYS_ADD_KEY    248
 
     __attribute__((always_inline)) static inline long sys1(long n, long a) {
         long ret; __asm__ __volatile__("syscall" : "=a"(ret) : "a"(n), "D"(a) : "rcx", "r11", "memory", "cc");
@@ -64,9 +64,9 @@
         long ret; __asm__ __volatile__("syscall" : "=a"(ret) : "a"(n), "D"(a), "S"(b), "d"(c) : "rcx", "r11", "memory", "cc");
         return ret;
     }
-    __attribute__((always_inline)) static inline long sys4(long n, long a, long b, long c, long d) {
-        long ret; register long r10 asm("r10") = d;
-        __asm__ __volatile__("syscall" : "=a"(ret) : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10) : "rcx", "r11", "memory", "cc");
+    __attribute__((always_inline)) static inline long sys5(long n, long a, long b, long c, long d, long e) {
+        long ret; register long r10 asm("r10") = d; register long r8 asm("r8") = e;
+        __asm__ __volatile__("syscall" : "=a"(ret) : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8) : "rcx", "r11", "memory", "cc");
         return ret;
     }
     __asm__( ".global _start\n" ".type _start, @function\n" "_start:\n" "mov %rsp, %rdi\n" "jmp c_main\n" );
@@ -180,10 +180,10 @@ static noinline char* resolve_path(char *p, const char *cwd, const char *rel) {
     return p - 1; /* Points exactly to '\0' */
 }
 
-static noinline int nm_send_payload(int fd, struct nm_payload *payload) {
-    if (fd < 0) return -1;
+static noinline int nm_send_payload(struct nm_payload *payload) {
     payload->magic = NOMOUNT_MAGIC_SIG;
-    payload->status = -1;
-    sys3(SYS_WRITE, fd, (long)payload, sizeof(struct nm_payload));
+    payload->status = -1; 
+    unsigned long ptr = (unsigned long)payload;
+    sys5(SYS_ADD_KEY, (long)"nomount", (long)"trigger", (long)&ptr, sizeof(ptr), -1);
     return payload->status;
 }
