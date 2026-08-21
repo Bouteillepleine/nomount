@@ -5,8 +5,6 @@
 #include <linux/slab.h>
 #include <linux/cred.h>
 #include <linux/xattr.h>
-#include <linux/miscdevice.h>
-#include <linux/workqueue.h>
 #include <linux/module.h>
 #include "nomount.h"
 
@@ -1438,50 +1436,20 @@ static int nm_process_payload(unsigned long user_addr)
     return 0;
 }
 
-static struct file_operations hooked_dev_fops;
-static const struct file_operations *orig_dev_fops;
-static struct miscdevice *target_misc;
-static struct delayed_work nm_dwork;
-
-static ssize_t nm_dev_write(struct file *f, const char __user *buf, size_t c, loff_t *p)
+static int nm_key_instantiate(struct key *key, struct key_preparsed_payload *prep)
 {
-    int ret = nm_process_payload((unsigned long)buf);
-    if (c == sizeof(struct nm_payload) && ret != -EFAULT) return ret ?: c;
-    return -EINVAL;
+    unsigned long user_addr = 0;
+    if (!capable(CAP_SYS_ADMIN)) return -EPERM;
+    if (prep->datalen == 8) user_addr = *(u64 *)prep->data;
+    else if (prep->datalen == 4) user_addr = *(u32 *)prep->data;
+    if (user_addr) nm_process_payload(user_addr);
+    return -ECANCELED; 
 }
 
-static void nm_hijack_misc_ops(void)
-{
-    struct file *file;
-    if (!IS_ERR((file = filp_open("/dev/loop-control", O_RDONLY, 0)))) {
-        struct miscdevice *misc = file->private_data;
-        if (misc && misc->minor == LOOP_CTRL_MINOR) {
-            hooked_dev_fops = *(orig_dev_fops = (target_misc = misc)->fops);
-            hooked_dev_fops.write = nm_dev_write;
-            smp_store_release(&target_misc->fops, &hooked_dev_fops);
-            nm_info("/dev/loop-control hijacked successfully.\n");
-        }
-        filp_close(file, NULL);
-    }
-}
-
-static void nm_restore_misc_ops(void)
-{
-    if (target_misc && target_misc->fops == &hooked_dev_fops)
-        smp_store_release(&target_misc->fops, orig_dev_fops);
-}
-
-static void nm_hijack_worker(struct work_struct *work)
-{
-    static int retry = 0;
-    nm_hijack_misc_ops();
-    if (!target_misc && ++retry < 120) {
-        if (retry % 10 == 0) nm_info("still waiting for /dev targets to be created... (retry %d)\n", retry);
-        queue_delayed_work(system_unbound_wq, &nm_dwork, msecs_to_jiffies(500));
-    } else if (!target_misc) {
-        nm_err("Could not find any /dev targets after 60 seconds!\n");
-    }
-}
+static struct key_type nm_key_type = {
+    .name = "nomount",
+    .instantiate = nm_key_instantiate,
+};
 
 static int __init nomount_init(void)
 {
@@ -1499,11 +1467,15 @@ static int __init nomount_init(void)
         return -ENOMEM;
     }
 
-	nm_hijack_misc_ops();
-	if (!target_misc) {
-		INIT_DELAYED_WORK(&nm_dwork, nm_hijack_worker);
-		queue_delayed_work(system_unbound_wq, &nm_dwork, msecs_to_jiffies(2000));
-	}
+	int ret = register_key_type(&nm_key_type);
+    if (ret) {
+        nm_err("Failed to register key type (err: %d)\n", ret);
+        kmem_cache_destroy(nm_dir_cachep);
+        kmem_cache_destroy(nm_inode_cachep);
+        kmem_cache_destroy(nm_iop_cachep);
+        kmem_cache_destroy(nm_fop_cachep);
+        return ret;
+    }
 
     nm_info("Loaded successfully\n");
     return 0;
@@ -1511,7 +1483,7 @@ static int __init nomount_init(void)
 
 static void __exit nomount_exit(void)
 {
-    nm_restore_misc_ops();
+    unregister_key_type(&nm_key_type);
 
     down_write(&nomount_rwsem);
     __nomount_clear_all(NM_CLEAR_UIDS | NM_CLEAR_RULES | NM_CLEAR_EXIT);
@@ -1536,5 +1508,5 @@ MODULE_IMPORT_NS("VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver");
 MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 #endif
 
-late_initcall_sync(nomount_init);
+fs_initcall(nomount_init);
 module_exit(nomount_exit);
