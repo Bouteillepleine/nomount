@@ -14,70 +14,80 @@ display_usage() {
 }
 
 initialize_variables() {
-    if test -d "$GKI_ROOT/fs"; then
+    if [ -d "$GKI_ROOT/fs" ]; then
          FS_DIR="$GKI_ROOT/fs"
     else
          echo '[ERROR] "fs/" directory not found. Are you at the root of the kernel tree?'
          exit 127
     fi
 
-    FS_MAKEFILE=$FS_DIR/Makefile
-    FS_KCONFIG=$FS_DIR/Kconfig
+    FS_MAKEFILE="$FS_DIR/Makefile"
+    FS_KCONFIG="$FS_DIR/Kconfig"
 }
 
 perform_cleanup() {
     echo "[+] Cleaning up NoMount..."
-    [ -L "$FS_DIR/nomount" ] && rm "$FS_DIR/nomount" && echo "[-] Symlink removed."
-    grep -q "nomount" "$FS_MAKEFILE" && sed -i '/nomount/d' "$FS_MAKEFILE" && echo "[-] Makefile reverted."
-    grep -q "fs/nomount/Kconfig" "$FS_KCONFIG" && sed -i '/fs\/nomount\/Kconfig/d' "$FS_KCONFIG" && echo "[-] Kconfig reverted."
-    if [ -d "$REPO_DIR" ]; then
-        rm -rf "$REPO_DIR" && echo "[-] NoMount directory deleted."
+
+    if [ -L "$FS_DIR/nomount" ]; then
+        rm "$FS_DIR/nomount"
+        echo "[-] Symlink removed."
     fi
+
+    if grep -q "nomount" "$FS_MAKEFILE"; then
+        sed -i '/nomount/d' "$FS_MAKEFILE"
+        echo "[-] Makefile reverted."
+    fi
+
+    if grep -q "fs/nomount/Kconfig" "$FS_KCONFIG"; then
+        sed -i '/fs\/nomount\/Kconfig/d' "$FS_KCONFIG"
+        echo "[-] Kconfig reverted."
+    fi
+
+    if [ -d "$REPO_DIR" ]; then
+        rm -rf "$REPO_DIR"
+        echo "[-] NoMount directory deleted."
+    fi
+
     echo "[+] Cleanup complete."
 }
 
 setup_nomount() {
     echo "[+] Setting up NoMount..."
-    test -d "$REPO_DIR" || git clone "$REPO_URL" "$REPO_DIR" && echo "[+] Repository cloned."
 
-    cd "$REPO_DIR"
-    git stash >/dev/null 2>&1 || true && echo "[-] Stashed current changes."
-
-    if [ "$(git branch --list dev)" ]; then
-        git checkout dev --quiet && echo "[-] Switched to dev branch."
-    elif [ "$(git branch --list master)" ]; then
-        git checkout master --quiet && echo "[-] Switched to master branch."
+    if [ ! -d "$REPO_DIR" ]; then
+        git clone "$REPO_URL" "$REPO_DIR"
+        echo "[+] Repository cloned."
     fi
 
-    git pull --quiet && echo "[+] Repository updated."
+    cd "$REPO_DIR"
 
+    git reset --hard HEAD --quiet
     if [ -z "${1-}" ]; then
-        LATEST_TAG=$(git describe --abbrev=0 --tags 2>/dev/null || echo "")
-        if [ -n "$LATEST_TAG" ]; then
-            git checkout "$LATEST_TAG" --quiet && echo "[-] Checked out latest tag ($LATEST_TAG)."
-        else
-            echo "[-] No tags found. Staying on default branch."
-        fi
+        git checkout dev --quiet 2>/dev/null || git checkout master --quiet 2>/dev/null
+        git pull --quiet
+        echo "[-] Checked out and updated default branch."
     else
-        git checkout "$1" --quiet && echo "[-] Checked out $1." || echo "[-] Checkout default branch"
+        git fetch --all --tags --quiet
+        git checkout "$1" --quiet
+        echo "[-] Checked out specific target: $1"
     fi
 
     CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
     if [ "$CURRENT_BRANCH" = "master" ] || [ "${1-}" = "master" ]; then
-        echo "[+] Legacy version detected (master branch). Applying in-kernel hooks..."
+        echo "[+] Legacy version detected. Applying in-kernel hooks..."
         cd "$GKI_ROOT"
 
         if [ -f "Makefile" ]; then
-            K_VER=$(grep -E '^VERSION\s*=' Makefile | tr -d ' ' | cut -d'=' -f2)
-            K_PATCH=$(grep -E '^PATCHLEVEL\s*=' Makefile | tr -d ' ' | cut -d'=' -f2)
-            FULL_KVER="${K_VER}.${K_PATCH}"
-
+            KVER=$(grep -E '^VERSION\s*=' Makefile | tr -d ' ' | cut -d'=' -f2)
+            KPATCH=$(grep -E '^PATCHLEVEL\s*=' Makefile | tr -d ' ' | cut -d'=' -f2)
+            FULL_KVER="${KVER}.${KPATCH}"
             PATCH_FILE="$REPO_DIR/kernel/patches/nomount_${FULL_KVER}_kernel_integration.patch"
             if [ -f "$PATCH_FILE" ]; then
-                echo "[-] Found patch for kernel ${K_FULL_VER}. Applying..."
+                echo "[-] Found patch for kernel ${FULL_KVER}. Applying..."
+                patch -p1 --forward --dry-run < "$PATCH_FILE" >/dev/null 2>&1 && \
                 patch -p1 < "$PATCH_FILE" || echo "[!] Warning: Patch failed or was already applied."
             else
-                echo "[!] Error: No patch file found for kernel version ${K_FULL_VER}!"
+                echo "[!] Error: No patch file found for kernel version ${FULL_KVER}!"
                 echo "    Expected path: $PATCH_FILE"
             fi
         else
@@ -87,17 +97,27 @@ setup_nomount() {
 
     cd "$FS_DIR"
 
-    ln -sf "$(realpath --relative-to="$FS_DIR" "$REPO_DIR/kernel/src")" "nomount" && echo "[+] Symlink created (fs/nomount -> kernel/src)."
-    grep -q "nomount" "$FS_MAKEFILE" || printf "\nobj-\$(CONFIG_NOMOUNT) += nomount/\n" >> "$FS_MAKEFILE" && echo "[+] Modified fs/Makefile."
+    ln -sfn "$(realpath --relative-to="$FS_DIR" "$REPO_DIR/kernel/src")" "nomount"
+    echo "[+] Symlink created (fs/nomount -> kernel/src)."
 
-    if grep -q "source \"fs/nomount/Kconfig\"" "$FS_KCONFIG"; then
+    if ! grep -q "nomount" "$FS_MAKEFILE"; then
+        printf "\nobj-\$(CONFIG_NOMOUNT) += nomount/\n" >> "$FS_MAKEFILE"
+        echo "[+] Modified fs/Makefile."
+    fi
+
+    if grep -q 'source "fs/nomount/Kconfig"' "$FS_KCONFIG"; then
         echo "[-] Kconfig already modified."
     else
-        if grep -q "^endmenu" "$FS_KCONFIG"; then
-            sed -i -e '/^endmenu/i\source "fs/nomount/Kconfig"' "$FS_KCONFIG"
-        else
-            echo 'source "fs/nomount/Kconfig"' >> "$FS_KCONFIG"
-        fi
+        awk '
+            /^endmenu/ { last_match = NR }
+            { lines[NR] = $0 }
+            END {
+                for (i = 1; i <= NR; i++) {
+                    if (i == last_match) print "source \"fs/nomount/Kconfig\""
+                    print lines[i]
+                }
+            }
+        ' "$FS_KCONFIG" > "$FS_KCONFIG.tmp" && mv "$FS_KCONFIG.tmp" "$FS_KCONFIG"
         echo "[+] Modified fs/Kconfig."
     fi
 
