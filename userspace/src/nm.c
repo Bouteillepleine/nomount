@@ -10,7 +10,7 @@ void c_main(long *sp) {
     char **argv = (char **)(sp + 1);
     int exit_code = 1;
 
-    struct nm_payload *payload = (void *)(((long)sp - 16384) & ~4095L);
+    struct nm_payload *payload = (void *)(((long)sp - 1048576) & ~4095L);
     enum nm_cli_action action = ACTION_NONE;
     int data_start_idx = 2;
     int is_json = 0;
@@ -73,7 +73,7 @@ void c_main(long *sp) {
             int step = (action == ACTION_RULE_ADD && !is_whiteout) ? 2 : 1;
             if (p_count < step) { exit_code = 0; goto do_exit; }
 
-            char *cwd_buf = (char *)sp - 12288;
+            char *cwd_buf = (char *)payload - PATH_MAX;
             const char *cwd = (sys3(SYS_GETCWD, (long)cwd_buf, PATH_MAX, 0) > 0) ? cwd_buf : "/";
             int target_cmd = (action == ACTION_RULE_DEL) ? NM_CMD_DEL_RULE : NM_CMD_ADD_RULE;
 
@@ -84,13 +84,13 @@ void c_main(long *sp) {
             char *cursor = payload->buffer;
 
             for (int i = 0; i + step - 1 < p_count; i += step) {
-                char *v_resolved = (char *)sp - 8196;
+                char *v_resolved = cwd_buf - PATH_MAX;
                 char *v_end = resolve_path(v_resolved, cwd, p_args[i]);
                 int v_len = v_end - v_resolved;
                 if (!v_len) { exit_code = 3; continue; }
 
                 int r_len = 0;
-                char *r_resolved = (char *)sp - 4096;
+                char *r_resolved = v_resolved - PATH_MAX;
                 if (action == ACTION_RULE_ADD && !is_whiteout) {
                     char *r_end = resolve_path(r_resolved, cwd, p_args[i+1]);
                     r_len = r_end - r_resolved;
