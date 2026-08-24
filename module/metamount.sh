@@ -2,6 +2,8 @@
 
 MODDIR=${0%/*}
 LOADER="$MODDIR/bin/nm"
+KO_LOADER="$MODDIR/loader"
+USE_KSUD=false
 MODULES_DIR="/data/adb/modules"
 NOMOUNT_DATA="/data/adb/nomount"
 LOG_FILE="$NOMOUNT_DATA/nomount.log"
@@ -10,6 +12,29 @@ BOOT_SEMAPHORE="$NOMOUNT_DATA/.booting"
 TARGET_PARTITIONS="system vendor product system_ext odm oem"
 PROP_FILE="$MODDIR/module.prop"
 BASE_DESC="A metamodule that replaces OverlayFS/MagicMount with VFS path redirection."
+
+if command -v ksud >/dev/null 2>&1 && \
+   ksud -h 2>&1 | grep -qE '(^|[[:space:]])insmod([[:space:]]|$)'; then
+    USE_KSUD=true
+fi
+
+load_ko() {
+    ko_name=${1##*/}
+
+    if [ "$USE_KSUD" = true ]; then
+        if ksud insmod "$1" && "$LOADER" version > /dev/null 2>&1; then
+            return 0
+        fi
+        echo "[WARN] ksud insmod failed; falling back to KoLoader." >> "$LOG_FILE"
+        rmmod nomount 2>/dev/null
+        USE_KSUD=false
+    fi
+
+    (
+        cd "$MODDIR/lkm" || exit 1
+        "$KO_LOADER" "$ko_name"
+    )
+}
 
 if [ ! -d "$NOMOUNT_DATA" ]; then
     mkdir -p "$NOMOUNT_DATA"
@@ -29,14 +54,25 @@ fi
 
 touch "$BOOT_SEMAPHORE"
 
-if ! "$LOADER" v > /dev/null 2>&1; then
-    echo "[FATAL] NoMount Netlink interface missing/unresponsive." >> "$LOG_FILE"
-    touch "$MODDIR/disable"
-    sed -i "s|^description=.*|description=[❌ ERROR: Kernel not patched] \\\\n$BASE_DESC|" "$PROP_FILE"
-    rm -f "$BOOT_SEMAPHORE"
-    exit 1
+echo "[INFO] Checking NoMount kernel support..." >> "$LOG_FILE"
+if "$LOADER" version > /dev/null 2>&1; then
+    echo "[INFO] Built-in Kernel support detected." >> "$LOG_FILE"
+else
+    echo "[INFO] Built-in not found. Attempting to load LKM..." >> "$LOG_FILE"
+    if [ -f "$MODDIR/lkm/nomount.ko" ]; then
+        load_ko "$MODDIR/lkm/nomount.ko" >> "$LOG_FILE" 2>&1
+    fi
+
+    if ! "$LOADER" version > /dev/null 2>&1; then
+        echo "[FATAL] NoMount Internal API is missing/unresponsive." >> "$LOG_FILE"
+        touch "$MODDIR/disable"
+        sed -i "s|^description=.*|description=[❌ ERROR: Kernel not patched or module failed to load] \\\\n$BASE_DESC|" "$PROP_FILE"
+        rm -f "$BOOT_SEMAPHORE"
+        exit 1
+    fi
+    echo "[INFO] LKM loaded and initialized correctly." >> "$LOG_FILE"
 fi
-echo "[OK] Netlink socket responding properly." >> "$LOG_FILE"
+echo "[OK] Internal API responding properly." >> "$LOG_FILE"
 
 VERBOSE=false
 if [ -f "$VERBOSE_FLAG" ]; then
@@ -62,47 +98,47 @@ for mod_path in "$MODULES_DIR"/*; do
             (
                 cd "$mod_path" || exit
                 if $VERBOSE; then
-                    find -L "$partition" \( -type f -o -type l \) 2>/dev/null | while read -r relative_path; do
+                    find -L "$partition" \( -type f -o -type l -o -type c \) 2>/dev/null | while read -r relative_path; do
                         real_path="$mod_path/$relative_path"
-                        virtual_path="/$relative_path"
-                        echo "  -> Inject: $virtual_path" >> "$LOG_FILE"
-                        "$LOADER" add "$virtual_path" "$real_path" 2>> "$LOG_FILE"
+                        v_path="$relative_path"
 
-                        case "$relative_path" in
-                            vendor/* | product/* | system_ext/* | odm/* | oem/*)
-                                if [ ! -e "$mod_path/system/$relative_path" ] && [ ! -L "$mod_path/system/$relative_path" ]; then
-                                    echo "  -> Inject (Alias): /system/$relative_path" >> "$LOG_FILE"
-                                    "$LOADER" add "/system/$relative_path" "$real_path" 2>> "$LOG_FILE"
-                                fi
-                                ;;
-                            system/vendor/* | system/product/* | system/system_ext/* | system/odm/* | system/oem/*)
-                                alias_path="/${relative_path#system/}"
-                                if [ ! -e "$mod_path$alias_path" ] && [ ! -L "$mod_path$alias_path" ]; then
-                                    echo "  -> Inject (Alias): $alias_path" >> "$LOG_FILE"
-                                    "$LOADER" add "$alias_path" "$real_path" 2>> "$LOG_FILE"
-                                fi
-                                ;;
-                        esac
+                        if [ "${v_path#system/odm/}" != "$v_path" ]; then
+                            v_path="odm/${v_path#system/odm/}"
+                        fi
+                        virtual_path="/$v_path"
+
+                        if [ "${relative_path##*/}" = ".replace" ]; then
+                            target_dir="/${v_path%/.replace}"
+                            echo "  -> Whiteout: $target_dir" >> "$LOG_FILE"
+                            "$LOADER" rule add --whiteout "$target_dir" 2>> "$LOG_FILE"
+                            continue
+                        fi
+
+                        if [ -c "$real_path" ]; then
+                            echo "  -> Whiteout: $virtual_path" >> "$LOG_FILE"
+                            "$LOADER" rule add --whiteout "$virtual_path" 2>> "$LOG_FILE"
+                            continue
+                        fi
+
+                        echo "  -> Inject: $virtual_path" >> "$LOG_FILE"
+                        "$LOADER" rule add "$virtual_path" "$real_path" 2>> "$LOG_FILE"
                     done
                 else
-                    find -L "$partition" \( -type f -o -type l \) -exec sh -c '
+                    find -L "$partition" \( -type c -o -name ".replace" \) -exec sh -c '
+                        for f do
+                            v="$f"; [ "${v#system/odm/}" != "$v" ] && v="odm/${v#system/odm/}"
+                            if [ "${f##*/}" = ".replace" ]; then printf "/%s\0" "${v%/.replace}"
+                            else printf "/%s\0" "$v"; fi
+                        done
+                    ' _ {} + 2>/dev/null | xargs -0 -r "$LOADER" rule add --whiteout >> "$LOG_FILE" 2>&1
+
+                    find -L "$partition" \( -type f -o -type l \) ! -name ".replace" -exec sh -c '
                         mod="$1"; shift
                         for f do
-                            printf "/%s\0%s/%s\0" "$f" "$mod" "$f"
-                            case "$f" in
-                                vendor/*|product/*|system_ext/*|odm/*|oem/*)
-                                    if [ ! -e "$mod/system/$f" ] && [ ! -L "$mod/system/$f" ]; then
-                                        printf "/system/%s\0%s/%s\0" "$f" "$mod" "$f"
-                                    fi
-                                    ;;
-                                system/vendor/*|system/product/*|system/system_ext/*|system/odm/*|system/oem/*)
-                                    if [ ! -e "$mod/${f#system/}" ] && [ ! -L "$mod/${f#system/}" ]; then
-                                        printf "/%s\0%s/%s\0" "${f#system/}" "$mod" "$f"
-                                    fi
-                                    ;;
-                            esac
+                            v="$f"; [ "${v#system/odm/}" != "$v" ] && v="odm/${v#system/odm/}"
+                            printf "/%s\0%s/%s\0" "$v" "$mod" "$f"
                         done
-                    ' _ "$mod_path" {} + 2>/dev/null | xargs -0 -r -n 500 "$LOADER" add >> "$LOG_FILE" 2>&1
+                    ' _ "$mod_path" {} + 2>/dev/null | xargs -0 -r "$LOADER" rule add >> "$LOG_FILE" 2>&1
                 fi
             )
         fi
@@ -117,7 +153,7 @@ sed -i "s|^description=.*|description=$BASE_DESC|" "$PROP_FILE"
 
 if $VERBOSE; then
     echo "Current files injected:" >> "$LOG_FILE"
-    "$LOADER" list >> "$LOG_FILE"
+    "$LOADER" rule list >> "$LOG_FILE"
 fi
 
 exit 0

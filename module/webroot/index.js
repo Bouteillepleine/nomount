@@ -27,7 +27,8 @@ const LOCALE_NAMES = {
     id: 'Bahasa Indonesia',
     zh: '简体中文',
     ru: 'Русский',
-    tr: 'Türkçe'
+    tr: 'Türkçe',
+    vi: 'Tiếng Việt'
 };
 let activeLocale = 'en', translations = {};
 
@@ -212,6 +213,7 @@ function getHomeElements() {
         homeUI.statusLabel = document.getElementById('status-indicator');
         homeUI.statusCard = document.querySelector('.home-status-card');
         homeUI.statusIcon = document.getElementById('status-icon');
+        homeUI.modeBadge = document.getElementById('nm-mode-badge');
     }
     return homeUI;
 }
@@ -302,8 +304,9 @@ async function loadHome() {
         getprop ro.build.version.release; echo "|||"
         getprop ro.build.version.sdk; echo "|||"
         grep "version=" ${MOD_DIR}/nomount/module.prop | cut -d= -f2; echo "|||"
-        ${NM_BIN} v; echo "|||"
-        ${NM_BIN} list json
+        ${NM_BIN} version; echo "|||"
+        ${NM_BIN} rule list --json; echo "|||"
+        if ${NM_BIN} version > /dev/null 2>&1; then lsmod | grep -q nomount && echo lkm || echo built-in; fi
     `;
 
     try {
@@ -331,11 +334,13 @@ async function loadHome() {
               mVer = raw[4] || unk,
               dVer = raw[5] || unk;
 
+        const nmMode = (parts[7] || '').toLowerCase();
         const homeData = {
             kernelVer: kVer, deviceModel: model,
             androidInfo: `Android ${aRel} (API ${aSdk})`,
             versionFull: `${mVer} (${dVer})`,
-            active: dVer !== unk
+            active: dVer !== unk,
+            nmMode
         };
 
         requestAnimationFrame(() => {
@@ -361,6 +366,10 @@ function applyHomeData(data, statsText) {
         el.statusIcon.classList.toggle('inactive', !data.active);
         setIcon(el.statusIcon, data.active ? 'check_circle' : 'error', 'outline');
     }
+
+    if (el.modeBadge) {
+        el.modeBadge.textContent = data.nmMode === 'lkm' ? translate('mode_lkm') : data.nmMode === 'built-in' ? translate('mode_builtin') : '';
+    }
 }
 
 // Modules
@@ -372,7 +381,7 @@ async function loadModules() {
 
     try {
         const script = `
-            ${NM_BIN} list json; echo "|||"
+            ${NM_BIN} rule list --json; echo "|||"
             cd ${MOD_DIR}
             for mod in *; do
                 [ ! -d "$mod" ] || [ "$mod" = "nomount" ] || [ ! -f "$mod/module.prop" ] && continue
@@ -440,41 +449,39 @@ async function loadModules() {
 
 async function loadModule(modId) {
     const modPath = `${MOD_DIR}/${modId}`;
-
     const script = `
         cd "${modPath}" || exit 0
-        find -L system vendor product system_ext odm oem \\( -type f -o -type l \\) -exec sh -c '
+        find -L system vendor product system_ext odm oem \\( -type c -o -name ".replace" \\) -exec sh -c '
+            for f do
+                v="$f"; [ "\${v#system/odm/}" != "$v" ] && v="odm/\${v#system/odm/}"
+                if [ "\${f##*/}" = ".replace" ]; then printf "/%s\\0" "\${v%/.replace}"
+                else printf "/%s\\0" "$v"; fi
+            done
+        ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule add --whiteout
+        find -L system vendor product system_ext odm oem \\( -type f -o -type l \\) ! -name ".replace" -exec sh -c '
             mod="$1"; shift
             for f do
-                printf "/%s\\0%s/%s\\0" "$f" "$mod" "$f"
-
-                case "$f" in
-                    vendor/*|product/*|system_ext/*|odm/*|oem/*)
-                        [ ! -e "$mod/system/$f" ] && [ ! -L "$mod/system/$f" ] && printf "/system/%s\\0%s/%s\\0" "$f" "$mod" "$f" ;;
-                    system/vendor/*|system/product/*|system/system_ext/*|system/odm/*|system/oem/*)
-                        [ ! -e "$mod/\${f#system/}" ] && [ ! -L "$mod/\${f#system/}" ] && printf "/%s\\0%s/%s\\0" "\${f#system/}" "$mod" "$f" ;;
-                esac
+                v="$f"; [ "\${v#system/odm/}" != "$v" ] && v="odm/\${v#system/odm/}"
+                printf "/%s\\0%s/%s\\0" "$v" "$mod" "$f"
             done
-        ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r -n 500 ${NM_BIN} add
+        ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule add
     `;
-    
     try { await exec(script); } catch (e) { throw e; }
 }
 
 async function unloadModule(modId) {
-    try {
-        const rules = JSON.parse((await exec(`${NM_BIN} list json`)).stdout || "[]");
-        const targets = rules
-            .filter(r => r?.real?.startsWith(`${MOD_DIR}/${modId}/`))
-            .map(r => r.virtual);
-        if (targets.length === 0) return;
-        const cmdChunks = [];
-        for (let i = 0; i < targets.length; i += 500) {
-            const chunk = targets.slice(i, i + 500).join('\n');
-            cmdChunks.push(`cat << 'EOF' | tr '\\n' '\\0' | xargs -0 -r -n 500 ${NM_BIN} del\n${chunk}\nEOF`);
-        }
-        await exec(cmdChunks.join('\n'));
-    } catch (e) { throw e; }
+    const modPath = `${MOD_DIR}/${modId}`;
+    const script = `
+        cd "${modPath}" || exit 0
+        find -L system vendor product system_ext odm oem \\( -type f -o -type l -o -type c \\) -exec sh -c '
+            for f do
+                v="$f"; [ "\${v#system/odm/}" != "$v" ] && v="odm/\${v#system/odm/}"
+                if [ "\${f##*/}" = ".replace" ]; then printf "/%s\\0" "\${v%/.replace}"
+                else printf "/%s\\0" "$v"; fi
+            done
+        ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule del
+    `;
+    try { await exec(script); } catch (e) { throw e; }
 }
 
 // Apps & Exclusions
@@ -488,16 +495,18 @@ async function loadExclusions() {
     const loadId = ++exclusionsLoadId;
 
     try {
-        const readResult = await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`);
-        if (readResult.errno !== 0) throw new Error(readResult.stderr || 'Failed to read exclusions');
+        const { stdout } = await exec(`${NM_BIN} uid list 2>/dev/null`);
 
-        const blockedUids = parseUidList(readResult.stdout);
-        if (readResult.stdout !== serializeUidList(blockedUids)) {
-            const migrationResult = await exec(buildWriteUidListCmd(blockedUids));
-            if (migrationResult.errno !== 0) throw new Error(migrationResult.stderr || 'Failed to migrate exclusions');
+        let blockedUids = [];
+        try {
+            const parsed = JSON.parse(stdout.trim());
+            if (Array.isArray(parsed)) blockedUids = parsed.map(String);
+        } catch (e) { 
+            console.warn("No UIDs found or parse error");
         }
 
         if (blockedUids.length > 0) try { await ensureAppsCache(); } catch {}
+
         const appsMap = new Map(allAppsCache.map(app => [app.uid, app]));
         const htmlArr = blockedUids.map(uid => {
             const app = appsMap.get(uid);
@@ -660,19 +669,12 @@ function renderNextAppBatch() {
 async function removeExclusion(uid, name) {
     showToast(translate('unblocking_name', { name }));
     try {
-        const uidStr = normalizeUidList([uid])[0];
-        if (!uidStr) throw new Error('Invalid UID');
-
-        const readResult = await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`);
-        if (readResult.errno !== 0) throw new Error(readResult.stderr || 'Failed to read exclusions');
-
-        const remainingUids = parseUidList(readResult.stdout).filter(value => value !== uidStr);
-        const writeResult = await exec(buildWriteUidListCmd(remainingUids));
-        if (writeResult.errno !== 0) throw new Error(writeResult.stderr || 'Failed to update exclusions');
-
-        const unblockResult = await exec(`${NM_BIN} unblock ${uidStr}`);
+        const unblockResult = await exec(`${NM_BIN} uid del ${uid}`);
         if (unblockResult.errno !== 0) throw new Error(unblockResult.stderr || 'Failed to unblock UID');
+        const remainingUids = parseUidList((await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`)).stdout).filter(u => u !== String(uid));
+        await exec(buildWriteUidListCmd(remainingUids));
     } catch { showToast(translate('error_unblocking')); }
+
     await loadExclusions();
 }
 
@@ -684,20 +686,19 @@ async function addExclusion(uid, name) {
     }
 
     try {
-        const readResult = await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`);
-        if (readResult.errno !== 0) throw new Error(readResult.stderr || 'Failed to read exclusions');
-
-        const currentUids = parseUidList(readResult.stdout);
+        const currentUids = parseUidList((await exec(`cat ${FILES.exclusions} 2>/dev/null || echo ""`)).stdout);
         const alreadyBlocked = currentUids.includes(uidStr);
         if (!alreadyBlocked) {
-            const writeResult = await exec(buildWriteUidListCmd([...currentUids, uidStr]));
-            if (writeResult.errno !== 0) throw new Error(writeResult.stderr || 'Failed to update exclusions');
+            const persistResult = await exec(buildWriteUidListCmd([...currentUids, uidStr]));
+            if (persistResult.errno !== 0) throw new Error(persistResult.stderr || 'Failed to save exclusion');
         }
 
-        const blockResult = await exec(`${NM_BIN} block ${uidStr}`);
-        if (blockResult.errno !== 0) showToast(translate('blocked_saved'));
-        else showToast(alreadyBlocked ? translate('blocked_already') : translate('blocked', { name }));
+        const blockResult = await exec(`${NM_BIN} uid add ${uidStr}`);
+        if (alreadyBlocked) showToast(translate('blocked_already'));
+        else if (blockResult.errno !== 0) showToast(translate('blocked_saved'));
+        else showToast(translate('blocked', { name }));
     } catch { showToast(translate('error_blocking')); }
+
     await loadExclusions();
 }
 
@@ -723,7 +724,7 @@ async function loadOptions() {
             try {
                 const persistResult = await exec(buildWriteUidListCmd([]));
                 if (persistResult.errno !== 0) throw new Error(persistResult.stderr || 'Failed to clear exclusions');
-                const clearResult = await exec(`${NM_BIN} clear`);
+                const clearResult = await exec(`${NM_BIN} clear all`);
                 if (clearResult.errno !== 0) throw new Error(clearResult.stderr || 'Failed to clear runtime rules');
                 showToast(translate('clear_rules_done'));
                 loadModules();
