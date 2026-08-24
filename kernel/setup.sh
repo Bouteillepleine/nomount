@@ -16,6 +16,8 @@ display_usage() {
 initialize_variables() {
     if [ -d "$GKI_ROOT/fs" ]; then
          FS_DIR="$GKI_ROOT/fs"
+    else if [ -d "$GKI_ROOT/common/fs" ]; then
+         FS_DIR="$GKI_ROOT/common/fs"
     else
          echo '[ERROR] "fs/" directory not found. Are you at the root of the kernel tree?'
          exit 127
