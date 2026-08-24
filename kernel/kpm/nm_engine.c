@@ -23,6 +23,8 @@
 #include <linux/list.h>
 #include <linux/types.h>
 #include <linux/jump_label.h>
+#include <linux/srcu.h>
+#include <linux/mm.h>
 #include <asm/alternative.h>
 
 #include "nm_kpm_shim.h"

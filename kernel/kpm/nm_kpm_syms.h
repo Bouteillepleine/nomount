@@ -12,7 +12,7 @@ enum nm_kpm_sym {
     NMS_truncate_inode_pages_final, NMS_generic_fillattr, NMS_vfs_getattr_nosec,
 
     NMS_dentry_open, NMS_fput, NMS_generic_read_dir, NMS_vfs_llseek,
-    NMS_vfs_copy_file_range, NMS_shmem_file_setup,
+    NMS_vfs_copy_file_range, NMS_shmem_file_setup, NMS_generic_file_mmap,
 
     NMS___vfs_getxattr, NMS___vfs_setxattr, NMS_xattr_full_name,
 
@@ -26,6 +26,8 @@ enum nm_kpm_sym {
     NMS_call_rcu, NMS_synchronize_rcu, NMS_rcu_barrier, NMS_kvfree_call_rcu,
     NMS__raw_spin_lock, NMS__raw_spin_unlock,
     NMS___rcu_read_lock, NMS___rcu_read_unlock,
+    NMS___srcu_read_lock, NMS___srcu_read_unlock, NMS_synchronize_srcu,
+    NMS_init_srcu_struct, NMS_cleanup_srcu_struct,
     NMS_down_read, NMS_up_read, NMS_down_write, NMS_up_write,
 
     NMS_register_key_type, NMS_unregister_key_type,

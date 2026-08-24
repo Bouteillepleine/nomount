@@ -66,6 +66,7 @@
                                 NM_SYM(NMS_vfs_copy_file_range, ssize_t (*)(struct file *, loff_t, struct file *, loff_t, size_t, unsigned int))((a), (b), (c), (d), (e), (g))
 #define shmem_file_setup(n, sz, f) \
                                 NM_SYM(NMS_shmem_file_setup, struct file *(*)(const char *, loff_t, unsigned long))((n), (sz), (f))
+#define generic_file_mmap(f, v) NM_SYM(NMS_generic_file_mmap, int (*)(struct file *, struct vm_area_struct *))((f), (v))
 #define __vfs_getxattr(d, i, n, v, sz) \
                                 NM_SYM(NMS___vfs_getxattr, int (*)(struct dentry *, struct inode *, const char *, void *, size_t))((d), (i), (n), (v), (sz))
 #define get_user_pages_fast(a, n, g, p) \
@@ -107,6 +108,35 @@ static inline void nm_kpm_rcu_read_unlock(void)
 #define rcu_read_lock()         nm_kpm_rcu_read_lock()
 #undef  rcu_read_unlock
 #define rcu_read_unlock()       nm_kpm_rcu_read_unlock()
+
+static inline int nm_kpm_srcu_read_lock(struct srcu_struct *ssp)
+{ return NM_SYM(NMS___srcu_read_lock, int (*)(struct srcu_struct *))(ssp); }
+static inline void nm_kpm_srcu_read_unlock(struct srcu_struct *ssp, int idx)
+{ NM_SYM(NMS___srcu_read_unlock, void (*)(struct srcu_struct *, int))(ssp, idx); }
+static inline void nm_kpm_synchronize_srcu(struct srcu_struct *ssp)
+{ NM_SYM(NMS_synchronize_srcu, void (*)(struct srcu_struct *))(ssp); }
+static inline int nm_kpm_init_srcu_struct(struct srcu_struct *ssp)
+{ return NM_SYM(NMS_init_srcu_struct, int (*)(struct srcu_struct *))(ssp); }
+static inline void nm_kpm_cleanup_srcu_struct(struct srcu_struct *ssp)
+{ if (nm_kpm_sym[NMS_cleanup_srcu_struct]) NM_SYM(NMS_cleanup_srcu_struct, void (*)(struct srcu_struct *))(ssp); }
+#undef  srcu_read_lock
+#define srcu_read_lock(s)       nm_kpm_srcu_read_lock(s)
+#undef  srcu_read_unlock
+#define srcu_read_unlock(s, i)  nm_kpm_srcu_read_unlock((s), (i))
+#undef  synchronize_srcu
+#define synchronize_srcu(s)     nm_kpm_synchronize_srcu(s)
+#undef  init_srcu_struct
+#define init_srcu_struct(s)     nm_kpm_init_srcu_struct(s)
+#undef  cleanup_srcu_struct
+#define cleanup_srcu_struct(s)  nm_kpm_cleanup_srcu_struct(s)
+/* Real DEFINE_STATIC_SRCU() bakes a compile-time struct initializer that,
+ * on some kernel versions (e.g. 6.6's Tree SRCU), embeds a raw function
+ * pointer to `delayed_work_timer_fn` in .data — an unrelocatable address
+ * in a KPM .o. Declare it zeroed instead and bring it up at runtime via
+ * init_srcu_struct(), which lets the running kernel fill in its own
+ * addresses. */
+#undef  DEFINE_STATIC_SRCU
+#define DEFINE_STATIC_SRCU(name) static struct srcu_struct name
 
 static inline void nm_kpm_rb_erase_cached(struct rb_node *node, struct rb_root_cached *root)
 {
