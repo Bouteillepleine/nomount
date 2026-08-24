@@ -1,47 +1,61 @@
 # NoMount
 
-> WARNING: This project operates directly at the kernel VFS layer and is intended for research and development. Also this project may contain bugs. Proceed with caution.
+> **WARNING:** This project operates directly at the kernel VFS layer and is intended for research and development. Proceed with caution.
 
-**NoMount** is a kernel-based file injection and path redirection framework for Android kernels.
+**NoMount** is a VFS (Virtual File System) path redirection framework for Android kernels.
 
-Unlike traditional root solutions that rely on `mount --bind` (which pollutes `/proc/mounts`, changes mount namespaces, and is easily detected), NoMount operates **purely at the VFS (Virtual File System) layer**. It manipulates path resolution and directory iteration directly inside the kernel, making injections effective yet virtually invisible to userspace detection methods.
+Unlike traditional mount solutions like Magic Mount or OverlayFS that rely on modifying the mount table and polluting `/proc/mounts`, NoMount operates purely in RAM. Instead of making a real mount, it intercepts path resolution and directory iteration dynamically, making file injections completely transparent to the Android system and userspace apps without generating any mounts.
 
-## Why NoMount?
+## How it Works
 
-Traditional methods (such a Magic Mount) modify the mount table. Some detectors and banking apps scan `/proc/self/mountinfo` to find these anomalies.
+When you set up a redirection, you provide two paths: the original file the system expects to find (e.g., `/vendor/etc/audio.conf`), and your modified file located elsewhere (e.g., `/data/local/tmp/mod.conf`).
 
-**NoMount changes the paradigm:**
+Instead of applying global hooks in-kernel that affect the whole system, NoMount specifically modifies the directory operations of the target path directly in the RAM cache. When an application requests the original file, NoMount intercepts the call and creates a fake file representation in RAM. Once the application opens this file, NoMount internally opens your real modified file in the background and links them together. From that exact moment, any read, memory mapping (`mmap`), or data operation performed by the application is forwarded to your real file. The application reads the modified content naturally, completely unaware of the redirection.
 
-1. **No Mounts:** No `mount()` syscalls are ever used. The mount table remains 100% stock.
-2. **Visual Injection:** Uses advanced `iterate_dir` hooking to make "new" files appear in read-only directories (like `/vendor`) without physically touching the partition.
-3. **Files Redireccion:** Any file passed through `getname_hook` is intercepted by NoMount, ensuring that any file can be redirected from anywhere.
-4. **Native Permission Delegation:** By seamlessly redirecting the underlying inode without permission hooks, it inherently bypasses restrictions while keeping **SELinux** perfectly intact.
+NoMount also takes control of directory iteration. This allows you to inject entirely new files into existing system directories or completely hide existing ones (known as whiteouts). When an app or a terminal command like `ls` tries to list the contents of a directory, NoMount dynamically injects the new entries or omits the hidden ones, reflecting the changes in file lists and system calls. Also NoMount includes a dedicated UID filter. Before any path interception occurs, NoMount checks the process ID of the application making the request. If the app's UID is flagged (such as a banking app or an root detector), NoMount simply steps aside and lets the kernel resolve the path normally. The isolated app will see the stock, untouched filesystem.
 
-## Key Features
+This approach makes NoMount highly compatible with both read-only partitions (like `erofs`) and read-write partitions (like `ext4`), because the underlying partition is never modified. Furthermore, all communication between the userspace tool and the kernel is handled via the Linux keyring subsystem (`add_key`), completely bypassing the complications of traditional `/dev` nodes and IOCTL commands.
 
-* **Transparent Path Redirection:** Intercepts a target VFS path (e.g., `/system/app/YouTube/YouTube.apk`) and redirects the file descriptor to a modified file in a different partition (e.g., `/data`). The userspace process is unaware of the redirection.
-* **VFS Directory Injection:** Injects completely new file or directory entries into read-only system paths. Using custom `iterate_dir` kernel hooks, injected files appear natively in standard `readdir` calls, `ls` outputs, and Java `File.list()`.
-* **Security Context Bypass:** `inode_permission` and `generic_permission` hooks ensure that the injected files can be traversed and read, while correctly simulating the typical attributes of system partitions.
-* **UID-Based Rule Isolation:** Utilizes a hash table to filter active rules per process UID. Specific applications can be isolated to see the 100% stock filesystem without any applied injections.
+## How to Use It (Metamodule)
 
-## Kernel Integration
+NoMount is distributed as a **Metamodule** for KernelSU (and forks) and APatch (and forks). This means it acts as a master module that dynamically intercepts and manages the mounting process of other standard modules in your system.
 
-Please see [kernel/README.md](kernel/README.md) for detailed kernel-side integration, patch instructions, and atchitecture details.
+The NoMount module includes a built-in **WebUI** that allows you to easily control the kernel subsystem without touching the terminal:
+* **Hot Load/Unload:** Enable or disable modules on the fly without rebooting.
+* **App Exclusion (UID Isolation):** Select specific apps (like banking apps or anti-cheats) from a list. The WebUI extracts their UID and isolates them, ensuring they only see the stock, untouched filesystem.
+* **Global Flush:** Instantly clear all redirection rules.
 
-## Usage (Userspace)
+### Do I need a custom kernel?
 
-The subsystem is controlled via the [`nm`](userspace/src/nm.c) binary communicating through a custom IOCTL interface.
+Since NoMount operates at the VFS layer, it requires kernel-level integration. However, how you get this integration depends on your device:
 
-| Command | Syntax | Description |
-| :--- | :--- | :--- |
-| **Add Rule** | `nm add <virtual> <real>` | Inject `real` file at `virtual` path. |
-| **Delete Rule** | `nm del <virtual>` | Remove a specific injection rule. |
-| **Remove Rule** | `nm rm <virtual>` | Alias for `del`. |
-| **Block UID** | `nm block <uid>` | Isolate UID from seeing any injections. |
-| **Unblock UID** | `nm unblock <uid>` | Restore injection visibility for UID. |
-| **List Rules** | `nm ls [json]` | Show currently active rules (supports standard or `json` output). |
-| **Clear All** | `nm clear` | Flush all rules and UID blocks immediately. |
-| **Version** | `nm ver` | Show the kernel subsystem version. |
+* **Standard GKI Kernels (5.10+):** You **DO NOT** need to modify your kernel. The NoMount release ZIP includes pre-compiled LKMs (Loadable Kernel Modules) that will inject the VFS subsystem automatically upon flashing.
+* **Legacy Kernels (< 5.10) and Strict Kernels:** If you are on an older kernel (e.g., 4.14, 4.19) or a strictly locked kernel (e.g., Sultan kernels with `CONFIG_INTEGRATED_MODULES=y`), the pre-compiled LKMs will not load. You will need to integrate NoMount directly into your kernel source or compile a specific LKM for your device.
+
+For detailed instructions on how to patch your kernel source or compile a custom LKM, please read [kernel/README.md](kernel/README.md).
+
+### How to Install the NoMount Metamodule
+
+If your kernel already has NoMount integrated, or if you plan to use the included / compiled LKM, simply download the latest module from [Releases](https://github.com/maxsteeel/nomount/releases) or the [Nightly builds (dev branch)](https://nightly.link/maxsteeel/nomount/workflows/build/dev). Flash it via KernelSU/APatch and reboot your device.
+
+After rebooting, just install your favorite modules (like audio mods or system tweaks) in KernelSU/APatch exactly as you normally would. NoMount's Metamodule will automatically intercept them at boot and use VFS injection instead of traditional mounts.
+
+## How to Use It (Binary)
+
+The subsystem is controlled via the `nm` binary. The CLI uses a simple command structure.
+
+| Command | Description |
+| --- | --- |
+| `nm rule add <virtual> <real>` | Inject `real` file at `virtual` path. |
+| `nm rule add --whiteout <virtual>` | Hide the file/directory at `virtual` path. |
+| `nm rule del <virtual>` | Remove a specific injection rule. |
+| `nm uid add <uid>` | Isolate UID. The app will see the stock filesystem. |
+| `nm uid del <uid>` | Remove isolation for UID. |
+| `nm rule list` | Show currently active injection rules. |
+| `nm rule list --json` | Show currently active injection rules in JSON format. |
+| `nm uid list` | Show currently isolated UIDs. |
+| `nm clear all` | Flush all rules and UID blocks immediately. |
+| `nm version` | Show the kernel subsystem version. |
 
 ### Examples
 
@@ -49,43 +63,36 @@ The subsystem is controlled via the [`nm`](userspace/src/nm.c) binary communicat
 
 ```bash
 # The system thinks libfoo.so is in /vendor, but it loads from /data
-nm add /vendor/lib64/soundfx/libfoo.so /data/local/tmp/my_lib.so
+nm rule add /vendor/lib64/soundfx/libfoo.so /data/local/tmp/my_lib.so
 
 ```
 
-**Replace a config file:**
+**Hide a file completely (Whiteout):**
 
 ```bash
-# Instantly replace audio configs system-wide
-nm add /vendor/etc/audio_effects.conf /data/adb/modules/my_mod/audio_effects.conf
+# Make the system think this configuration file does not exist
+nm rule add --whiteout /system/etc/hidden_config.xml
 
 ```
 
-**Redirect any file:**
-```bash
-# nm binary recognize relative paths, reconstruct it internally and redirect file correctly
-nm add test temp
-
-```
-
-**Hide root from a banking app:**
+**Hide modifications from a specific app:**
 
 ```bash
-# App with UID 10256 will see the stock system, no injections
-nm block 10256
+# App with UID 10256 will see the untouched filesystem, bypassing detection
+nm uid add 10256
 
 ```
 
-## Special thanks:
+> **Note:** Because NoMount operates entirely in RAM, manual rules or modifications created via the CLI are lost upon reboot. The metamodule handles the persistent injection of your installed modules automatically during the boot process.
 
--  **[HymoFS](https://github.com/Anatdx/HymoFS)**: Inspiration for this project.
--  **[A7mdwassa](https://github.com/A7mdwassa)**: Tester and contributor.
--  **[ZQZCC](https://github.com/ZQZCC)**: WebUI MD3E-style design.
--  **[backslashxx](https://github.com/backslashxx)**: Code optimization.
--  **[KernelSU](https://github.com/tiann/KernelSU)**: Root solution.
--  **All testers**: Thanks for making this project more stable!
+## Special Thanks
+
+* **[Kasumi](https://github.com/Anatdx/Kasumi)**: Inspiration for this project.
+* **[ZQZCC](https://github.com/ZQZCC)**: WebUI MD3E-style design.
+* **[backslashxx](https://github.com/backslashxx)**: Code optimization.
+* **[KernelSU](https://github.com/tiann/KernelSU)**: Root solution.
+* **All testers and contributors**: Thanks for testing this project and helping to make it stable.
 
 ## Disclaimer
 
-**NoMount** is a powerful kernel modification tool intended for research and development. Modifying kernel behavior carries inherent risks, including system instability or data loss. The developers are not responsible for bricked devices or thermonuclear war.
-
+**NoMount** is a kernel modification tool intended for research and development. Modifying kernel behavior carries inherent risks. The developers are not responsible for bricked devices, data loss, or thermonuclear war.

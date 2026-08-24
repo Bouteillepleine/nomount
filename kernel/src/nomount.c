@@ -1200,7 +1200,9 @@ static struct nomount_rule *nm_alloc_rule(const char *v_path, const char *r_path
     }
 
     if (kern_path(nm_get_vpath(rule), LOOKUP_FOLLOW, &v_path_struct) == 0) {
-        rule->v_ino = d_backing_inode(v_path_struct.dentry)->i_ino;
+        struct dentry *target_dentry = v_path_struct.dentry;
+        rule->v_ino = d_backing_inode(target_dentry)->i_ino;
+        d_drop(target_dentry);
         path_put(&v_path_struct);
     } else {
          rule->v_ino = (unsigned long)rule->v_hash;
