@@ -7,11 +7,29 @@ ui_print " "
 
 ui_print "- Device Architecture: $ARCH"
 
+# Check root implementation
+if [ "$KSU" = "true" ]; then
+  ROOT_IMP=ksu
+  ui_print "- Root implementation: KernelSU"
+elif [ "$APATCH" = "true" ]; then
+  ROOT_IMP=ap
+  ui_print "- Root implementation: APatch"
+else
+  abort "! Unsupported root env"
+fi
+
 if [ ! -f "$MODPATH/bin/nm-$ARCH" ]; then
   abort "! Unsupported architecture: $ARCH"
 fi
 mv "$MODPATH/bin/nm-$ARCH" "$MODPATH/bin/nm"
 set_perm "$MODPATH/bin/nm" 0 0 0755
+
+mkdir -p "/data/adb/$ROOT_IMP/bin"
+if ln -sf "/data/adb/modules/nomount/bin/nm" "/data/adb/$ROOT_IMP/bin/nm"; then
+    ui_print "- Symlink created."
+else
+    ui_print "! Failed to create 'nm' symlink, skipping.."
+fi
 
 USE_KSUD=false
 if command -v ksud >/dev/null 2>&1 && \
@@ -46,6 +64,7 @@ load_ko() {
   )
 }
 
+OLD_MODPATH="/data/adb/modules/nomount"
 KVER=$(uname -r | cut -d'.' -f1,2)
 AKVER=$(uname -r | grep -oE 'android[0-9]+')
 
@@ -55,23 +74,13 @@ else
   ui_print "- Detected Kernel: $KVER (Custom/Unknown branch)"
 fi
 
-install_lkm() {
-  local module_path="$1"
-  if command -v ksud >/dev/null 2>&1; then
-    ksud insmod "$module_path"
-    return $?
-  fi
-  insmod "$module_path"
-  return $?
-}
-
 NOMOUNT_LOADED=false
 OLD_LKM_UNLOADED=false
 RESTORED_OLD_KO=false
 IS_BUILTIN=false
 
 ui_print "- Checking Kernel support via Internal API..."
-if "$MODPATH/bin/nm" version > /dev/null 2>&1; then
+if "$MODPATH/bin/nm" version > /dev/null 2>&1 || "$OLD_MODPATH/bin/nm" version > /dev/null 2>&1; then
   if lsmod | grep -q "^nomount"; then
     ui_print "  [*] Active LKM detected during update. Unloading old driver..."
     rmmod nomount 2>/dev/null
@@ -113,11 +122,12 @@ else
     done
   fi
 
-  OLD_MODULE_KO="/data/adb/modules/nomount/lkm/nomount.ko"
-  if [ "$NOMOUNT_LOADED" = false ] && [ -f "$OLD_MODULE_KO" ]; then
+  if [ "$NOMOUNT_LOADED" = false ] && [ -f "$OLD_MODPATH/lkm/nomount.ko" ]; then
     ui_print "  [!] New modules failed. Restoring previous working LKM..."
     mkdir -p "$MODPATH/lkm"
-    cp "$OLD_MODULE_KO" "$MODPATH/lkm/nomount.ko"
+    cp "$OLD_MODPATH/lkm/nomount.ko" "$MODPATH/lkm/nomount.ko"
+    cp "$OLD_MODPATH/bin/nm" "$MODPATH/bin/nm"
+    chmod +x "$MODPATH/bin/nm"
     if load_ko "$MODPATH/lkm/nomount.ko" && "$MODPATH/bin/nm" version > /dev/null 2>&1; then
       NOMOUNT_LOADED=true
       RESTORED_OLD_KO=true

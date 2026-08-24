@@ -10,7 +10,7 @@ void c_main(long *sp) {
     char **argv = (char **)(sp + 1);
     int exit_code = 1;
 
-    struct nm_payload *payload = (void *)(((long)sp - 16384) & ~4095L);
+    struct nm_payload *payload = (void *)(((long)sp - 1048576) & ~4095L);
     enum nm_cli_action action = ACTION_NONE;
     int data_start_idx = 2;
     int is_json = 0;
@@ -73,7 +73,7 @@ void c_main(long *sp) {
             int step = (action == ACTION_RULE_ADD && !is_whiteout) ? 2 : 1;
             if (p_count < step) { exit_code = 0; goto do_exit; }
 
-            char *cwd_buf = (char *)sp - 12288;
+            char *cwd_buf = (char *)payload - PATH_MAX;
             const char *cwd = (sys3(SYS_GETCWD, (long)cwd_buf, PATH_MAX, 0) > 0) ? cwd_buf : "/";
             int target_cmd = (action == ACTION_RULE_DEL) ? NM_CMD_DEL_RULE : NM_CMD_ADD_RULE;
 
@@ -84,21 +84,21 @@ void c_main(long *sp) {
             char *cursor = payload->buffer;
 
             for (int i = 0; i + step - 1 < p_count; i += step) {
-                char *v_resolved = (char *)sp - 8196;
+                char *v_resolved = cwd_buf - PATH_MAX;
                 char *v_end = resolve_path(v_resolved, cwd, p_args[i]);
                 int v_len = v_end - v_resolved;
                 if (!v_len) { exit_code = 3; continue; }
 
                 int r_len = 0;
-                char *r_resolved = (char *)sp - 4096;
+                char *r_resolved = v_resolved - PATH_MAX;
                 if (action == ACTION_RULE_ADD && !is_whiteout) {
                     char *r_end = resolve_path(r_resolved, cwd, p_args[i+1]);
                     r_len = r_end - r_resolved;
                     if (!r_len) { exit_code = 3; continue; }
                 }
 
-                int header_size = (target_cmd == NM_CMD_ADD_RULE) ? 12 : 6;
-                if ((cursor - payload->buffer) + header_size + v_len + r_len > 3900) {
+                int header_size = (target_cmd == NM_CMD_ADD_RULE) ? sizeof(struct nm_rule_hdr) : sizeof(struct nm_del_hdr);
+                if ((cursor - payload->buffer) + header_size + v_len + r_len > sizeof(payload->buffer)) {
                     payload->data_size = cursor - payload->buffer;
                     exit_code |= (nm_send_payload(payload) < 0);
                     cursor = payload->buffer;
@@ -107,18 +107,19 @@ void c_main(long *sp) {
                 }
 
                 if (target_cmd == NM_CMD_ADD_RULE) {
-                    *(unsigned int*)cursor = (is_whiteout) ? 4 : 0;
-                    *(unsigned int*)(cursor + 4) = target_uid;
-                    *(unsigned short*)(cursor + 8) = v_len;
-                    *(unsigned short*)(cursor + 10) = r_len;
-                    memcpy(cursor + 12, v_resolved, v_len);
-                    if (r_len > 0) memcpy(cursor + 12 + v_len, r_resolved, r_len);
-                    cursor += 12 + v_len + r_len;
+                    struct nm_rule_hdr *h = (void *)cursor;
+                    h->flags = (is_whiteout) ? 4 : 0; h->uid = target_uid;
+                    h->v_len = v_len; h->r_len = r_len;
+
+                    memcpy(cursor + sizeof(*h), v_resolved, v_len);
+                    if (r_len > 0) memcpy(cursor + sizeof(*h) + v_len, r_resolved, r_len);
+                    cursor += sizeof(*h) + v_len + r_len;
                 } else {
-                    *(unsigned int*)cursor = target_uid;
-                    *(unsigned short*)(cursor + 4) = v_len;
-                    memcpy(cursor + 6, v_resolved, v_len);
-                    cursor += 6 + v_len;
+                    struct nm_del_hdr *h = (void *)cursor;
+                    h->uid = target_uid; h->v_len = v_len;
+
+                    memcpy(cursor + sizeof(*h), v_resolved, v_len);
+                    cursor += sizeof(*h) + v_len;
                 }
             }
 
@@ -184,16 +185,15 @@ void c_main(long *sp) {
                         print_str("  "); print_uint(uid);
                         offset = 0;
                     } else {
-                        unsigned int flags = *(unsigned int *)(data + pos);
-                        unsigned int uid   = *(unsigned int *)(data + pos + 4);
-                        unsigned short vlen = *(unsigned short *)(data + pos + 8);
-                        unsigned short rlen = *(unsigned short *)(data + pos + 10);
-                        pos += 12;
+                        struct nm_rule_hdr *h = (void *)(data + pos);
+                        unsigned int flags = h->flags, uid = h->uid;
+                        unsigned short vlen = h->v_len, rlen = h->r_len;
+                        pos += sizeof(*h);
 
                         char *v = data + pos; pos += vlen;
                         char *r = data + pos; pos += rlen;
                         int is_white_flag  = (flags & 4);
-                        int is_virtual_dir = (flags & 2); 
+                        int is_virtual_dir = (flags & 2);
 
                         if (is_json) {
                             print_str((const char *)",\n  {\n    \"virtual\": \"" + offset); offset = 0;
