@@ -72,31 +72,7 @@ setup_nomount() {
         echo "[-] Checked out specific target: $1"
     fi
 
-    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
-    if [ "$CURRENT_BRANCH" = "master" ] || [ "${1-}" = "master" ]; then
-        echo "[+] Legacy version detected. Applying in-kernel hooks..."
-        cd "$GKI_ROOT"
-
-        if [ -f "Makefile" ]; then
-            KVER=$(grep -E '^VERSION\s*=' Makefile | tr -d ' ' | cut -d'=' -f2)
-            KPATCH=$(grep -E '^PATCHLEVEL\s*=' Makefile | tr -d ' ' | cut -d'=' -f2)
-            FULL_KVER="${KVER}.${KPATCH}"
-            PATCH_FILE="$REPO_DIR/kernel/patches/nomount_${FULL_KVER}_kernel_integration.patch"
-            if [ -f "$PATCH_FILE" ]; then
-                echo "[-] Found patch for kernel ${FULL_KVER}. Applying..."
-                patch -p1 --forward --dry-run < "$PATCH_FILE" >/dev/null 2>&1 && \
-                patch -p1 < "$PATCH_FILE" || echo "[!] Warning: Patch failed or was already applied."
-            else
-                echo "[!] Error: No patch file found for kernel version ${FULL_KVER}!"
-                echo "    Expected path: $PATCH_FILE"
-            fi
-        else
-            echo "[!] Error: Top-level Makefile not found. Cannot determine kernel version."
-        fi
-    fi
-
     cd "$FS_DIR"
-
     ln -sfn "$(realpath --relative-to="$FS_DIR" "$REPO_DIR/kernel/src")" "nomount"
     echo "[+] Symlink created (fs/nomount -> kernel/src)."
 
